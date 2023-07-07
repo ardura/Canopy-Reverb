@@ -1,9 +1,9 @@
 #![allow(non_snake_case)]
 mod ui_knob;
-mod tapdelayline;
+mod reverb;
 use nih_plug::{prelude::*};
 use nih_plug_egui::{create_egui_editor, egui::{self, Color32, Rect, Rounding, RichText, FontId, Pos2}, EguiState};
-use std::{sync::{Arc}, ops::RangeInclusive};
+use std::{sync::{Arc}, ops::RangeInclusive, f32::consts::PI};
 
 /***************************************************************************
  * Subhoofer v2 by Ardura
@@ -23,7 +23,8 @@ const HEIGHT: u32 = 380;
 
 pub struct Gain {
     params: Arc<GainParams>,
-    tdl: tapdelayline::TappedDelayLine,
+    tdl_l: reverb::Reverb,
+    tdl_r: reverb::Reverb,
 }
 
 #[derive(Params)]
@@ -33,11 +34,17 @@ struct GainParams {
     #[persist = "editor-state"]
     editor_state: Arc<EguiState>,
 
-    #[id = "reverb_size"]
-    pub reverb_size: IntParam,
+    #[id = "reverb_type"]
+    pub reverb_type: IntParam,
 
-    #[id = "reverb_flutter"]
-    pub reverb_flutter: FloatParam,
+    #[id = "reverb_delay"]
+    pub reverb_delay: IntParam,
+
+    #[id = "reverb_decay"]
+    pub reverb_decay: FloatParam,
+
+    #[id = "reverb_gain"]
+    pub reverb_gain: FloatParam,
 
     #[id = "output_gain"]
     pub output_gain: FloatParam,
@@ -50,7 +57,8 @@ impl Default for Gain {
     fn default() -> Self {
         Self {
             params: Arc::new(GainParams::default()),
-            tdl: tapdelayline::TappedDelayLine::new(3000, vec![2000,2500,1000,500]),
+            tdl_l: reverb::Reverb::new(100,0.6,201),
+            tdl_r: reverb::Reverb::new(100,0.6,201),
         }
     }
 }
@@ -60,22 +68,43 @@ impl Default for GainParams {
         Self {
             editor_state: EguiState::from_size(WIDTH, HEIGHT),
 
-            reverb_size: IntParam::new(
-                "Size",
+            reverb_type: IntParam::new(
+                "Type",
                 0,
-                IntRange::Linear { min: 0, max: 200 },
+                IntRange::Linear { min: 0, max: 2 },
             )
-            .with_smoother(SmoothingStyle::Logarithmic(30.0)),
+            .with_smoother(SmoothingStyle::Logarithmic(30.0))
+            .with_unit(" Type"),
 
-            reverb_flutter: FloatParam::new(
-                "Flutter",
-                0.5,
+            reverb_delay: IntParam::new(
+                "Reverb Delay",
+                100,
+                IntRange::Linear { min: 1, max: 2000 },
+            )
+            .with_smoother(SmoothingStyle::Linear(200.0))
+            .with_unit(" Delay"),
+
+            reverb_decay: FloatParam::new(
+                "Reverb Decay",
+                0.0,
                 FloatRange::Linear {
                     min: 0.0,
-                    max: 1.0,
+                    max: 0.999,
                 },
             )
-            .with_smoother(SmoothingStyle::Linear(30.0)),
+            .with_smoother(SmoothingStyle::Linear(30.0))
+            .with_unit(" Decay"),
+
+            reverb_gain: FloatParam::new(
+                "Reverb Gain",
+                util::db_to_gain(0.0),
+                FloatRange::Skewed { 
+                    min: util::db_to_gain(-12.0), 
+                    max: util::db_to_gain(12.0),
+                    factor: FloatRange::gain_skew_factor(-12.0, 12.0) },
+            )
+            .with_smoother(SmoothingStyle::Linear(30.0))
+            .with_unit(" dB Reverb Gain"),
 
             output_gain: FloatParam::new(
                 "Output Gain",
@@ -86,7 +115,7 @@ impl Default for GainParams {
                     factor: FloatRange::gain_skew_factor(-12.0, 12.0) },
             )
             .with_smoother(SmoothingStyle::Linear(30.0))
-            .with_unit(" dB"),
+            .with_unit(" dB Out Gain"),
 
             // Dry/Wet parameter
             dry_wet: FloatParam::new(
@@ -164,6 +193,12 @@ impl Plugin for Gain {
                             ui.horizontal(|ui| {
                                 let knob_size = 40.0;
                                 ui.vertical(|ui| {
+                                    let mut type_knob = ui_knob::ArcKnob::for_param(&params.reverb_type, setter, knob_size + 8.0);
+                                    type_knob.preset_style(ui_knob::KnobStyle::MediumThin);
+                                    type_knob.set_fill_color(A_KNOB_INSIDE_COLOR);
+                                    type_knob.set_line_color(A_KNOB_OUTSIDE_COLOR);
+                                    ui.add(type_knob);
+
                                     let mut output_knob = ui_knob::ArcKnob::for_param(&params.output_gain, setter, knob_size);
                                     output_knob.preset_style(ui_knob::KnobStyle::SmallTogether);
                                     output_knob.set_fill_color(A_KNOB_OUTSIDE_COLOR2);
@@ -178,17 +213,23 @@ impl Plugin for Gain {
                                 });
 
                                 ui.vertical(|ui| {
-                                    let mut size_knob = ui_knob::ArcKnob::for_param(&params.reverb_size, setter, knob_size + 24.0);
-                                    size_knob.preset_style(ui_knob::KnobStyle::MediumThin);
-                                    size_knob.set_fill_color(A_KNOB_INSIDE_COLOR);
-                                    size_knob.set_line_color(A_KNOB_OUTSIDE_COLOR);
-                                    ui.add(size_knob);
+                                    let mut delay_knob = ui_knob::ArcKnob::for_param(&params.reverb_delay, setter, knob_size + 8.0);
+                                    delay_knob.preset_style(ui_knob::KnobStyle::MediumThin);
+                                    delay_knob.set_fill_color(A_KNOB_INSIDE_COLOR);
+                                    delay_knob.set_line_color(A_KNOB_OUTSIDE_COLOR);
+                                    ui.add(delay_knob);
 
-                                    let mut flutter_knob = ui_knob::ArcKnob::for_param(&params.reverb_flutter, setter, knob_size + 24.0);
+                                    let mut flutter_knob = ui_knob::ArcKnob::for_param(&params.reverb_decay, setter, knob_size + 8.0);
                                     flutter_knob.preset_style(ui_knob::KnobStyle::LargeMedium);
                                     flutter_knob.set_fill_color(A_KNOB_INSIDE_COLOR);
                                     flutter_knob.set_line_color(A_KNOB_OUTSIDE_COLOR);
                                     ui.add(flutter_knob);
+
+                                    let mut r_gain_knob = ui_knob::ArcKnob::for_param(&params.reverb_gain, setter, knob_size + 8.0);
+                                    r_gain_knob.preset_style(ui_knob::KnobStyle::LargeMedium);
+                                    r_gain_knob.set_fill_color(A_KNOB_INSIDE_COLOR);
+                                    r_gain_knob.set_line_color(A_KNOB_OUTSIDE_COLOR);
+                                    ui.add(r_gain_knob);
                                 });
                             });
                         });
@@ -216,10 +257,12 @@ impl Plugin for Gain {
     ) -> ProcessStatus {
         for mut channel_samples in buffer.iter_samples() {
             let mut processed_sample_l: f32;
-            let mut processed_sample_r: f32 = 0.0;
+            let mut processed_sample_r: f32;
 
-            let reverb_size: i32 = self.params.reverb_size.smoothed.next();
-            let reverb_flutter: f32 = self.params.reverb_flutter.smoothed.next();
+            let reverb_type: i32 = self.params.reverb_type.smoothed.next();
+            let reverb_delay: i32 = self.params.reverb_delay.smoothed.next();
+            let reverb_decay: f32 = self.params.reverb_decay.smoothed.next();
+            let reverb_gain: f32 = self.params.reverb_gain.smoothed.next();
             let output_gain: f32 = self.params.output_gain.smoothed.next();
             let dry_wet: f32 = self.params.dry_wet.value();
 
@@ -228,10 +271,13 @@ impl Plugin for Gain {
             let in_r = *channel_samples.get_mut(1).unwrap();
             
             ///////////////////////////////////////////////////////////////////////
-            
+
+            self.tdl_l.update(reverb_delay, reverb_decay);
+            self.tdl_r.update(reverb_delay, reverb_decay);
+
             // Process Audio
-            processed_sample_l = self.tdl.process(in_l, reverb_flutter, reverb_size, output_gain);
-            processed_sample_r = 0.0;
+            processed_sample_l = self.tdl_l.process(in_l) * reverb_gain;
+            processed_sample_r = self.tdl_r.process(in_r) * reverb_gain;
 
             ///////////////////////////////////////////////////////////////////////
 
