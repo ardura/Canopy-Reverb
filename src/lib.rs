@@ -25,7 +25,6 @@ pub struct Gain {
     params: Arc<GainParams>,
     reverb_l_array: Vec<reverb::Reverb>,
     reverb_r_array: Vec<reverb::Reverb>,
-    debug_counter: i32,
 }
 
 #[derive(Params)]
@@ -63,7 +62,6 @@ impl Default for Gain {
             params: Arc::new(GainParams::default()),
             reverb_l_array: (0..1).map(|_| reverb::Reverb::new(200,0.6,400).clone()).collect(),
             reverb_r_array: (0..1).map(|_| reverb::Reverb::new(200,0.6,400).clone()).collect(),
-            debug_counter: 0,
         }
     }
 }
@@ -236,19 +234,22 @@ impl Plugin for Gain {
                                     delay_knob.set_line_color(A_KNOB_OUTSIDE_COLOR);
                                     ui.add(delay_knob);
 
-                                    let mut flutter_knob = ui_knob::ArcKnob::for_param(&params.reverb_decay, setter, knob_size + 8.0);
-                                    flutter_knob.preset_style(ui_knob::KnobStyle::LargeMedium);
-                                    flutter_knob.set_fill_color(A_KNOB_INSIDE_COLOR);
-                                    flutter_knob.set_line_color(A_KNOB_OUTSIDE_COLOR);
-                                    ui.add(flutter_knob);
+                                    let mut decay_knob = ui_knob::ArcKnob::for_param(&params.reverb_decay, setter, knob_size + 8.0);
+                                    decay_knob.preset_style(ui_knob::KnobStyle::LargeMedium);
+                                    decay_knob.set_fill_color(A_KNOB_INSIDE_COLOR);
+                                    decay_knob.set_line_color(A_KNOB_OUTSIDE_COLOR);
+                                    ui.add(decay_knob);
 
+                                    /*
                                     let mut r_gain_knob = ui_knob::ArcKnob::for_param(&params.reverb_gain, setter, knob_size + 8.0);
                                     r_gain_knob.preset_style(ui_knob::KnobStyle::LargeMedium);
                                     r_gain_knob.set_fill_color(A_KNOB_INSIDE_COLOR);
                                     r_gain_knob.set_line_color(A_KNOB_OUTSIDE_COLOR);
                                     ui.add(r_gain_knob);
+                                    */
                                 });
 
+                                /*
                                 ui.vertical(|ui| {
                                     let mut skew_knob = ui_knob::ArcKnob::for_param(&params.reverb_skew, setter, knob_size);
                                     skew_knob.preset_style(ui_knob::KnobStyle::MediumThin);
@@ -256,6 +257,7 @@ impl Plugin for Gain {
                                     skew_knob.set_line_color(A_KNOB_OUTSIDE_COLOR);
                                     ui.add(skew_knob);
                                 });
+                                */
                             });
                         });
                     });
@@ -322,8 +324,6 @@ impl Plugin for Gain {
                 self.reverb_r_array.push(reverb::Reverb::new(temp_delay_r,reverb_decay,temp_buffer));
             }
 
-            let size_l = self.reverb_l_array.len();
-            let size_r = self.reverb_r_array.len();
             // Update our reverb stacks
             let mut elem: i32 = 1;
             for (left, right) in 
