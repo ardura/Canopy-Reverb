@@ -3,7 +3,7 @@ mod ui_knob;
 mod reverb;
 use nih_plug::{prelude::*};
 use nih_plug_egui::{create_egui_editor, egui::{self, Color32, Rect, Rounding, RichText, FontId, Pos2}, EguiState};
-use std::{sync::{Arc}, ops::RangeInclusive, f32::consts::PI};
+use std::{sync::{Arc}, ops::RangeInclusive};
 
 /***************************************************************************
  * Subhoofer v2 by Ardura
@@ -23,8 +23,9 @@ const HEIGHT: u32 = 380;
 
 pub struct Gain {
     params: Arc<GainParams>,
-    tdl_l: reverb::Reverb,
-    tdl_r: reverb::Reverb,
+    reverb_l_array: Vec<reverb::Reverb>,
+    reverb_r_array: Vec<reverb::Reverb>,
+    debug_counter: i32,
 }
 
 #[derive(Params)]
@@ -34,8 +35,8 @@ struct GainParams {
     #[persist = "editor-state"]
     editor_state: Arc<EguiState>,
 
-    #[id = "reverb_type"]
-    pub reverb_type: IntParam,
+    #[id = "reverb_stack"]
+    pub reverb_stack: IntParam,
 
     #[id = "reverb_delay"]
     pub reverb_delay: IntParam,
@@ -45,6 +46,9 @@ struct GainParams {
 
     #[id = "reverb_gain"]
     pub reverb_gain: FloatParam,
+
+    #[id = "reverb_skew"]
+    pub reverb_skew: FloatParam,
 
     #[id = "output_gain"]
     pub output_gain: FloatParam,
@@ -57,8 +61,9 @@ impl Default for Gain {
     fn default() -> Self {
         Self {
             params: Arc::new(GainParams::default()),
-            tdl_l: reverb::Reverb::new(100,0.6,201),
-            tdl_r: reverb::Reverb::new(100,0.6,201),
+            reverb_l_array: (0..1).map(|_| reverb::Reverb::new(200,0.6,400).clone()).collect(),
+            reverb_r_array: (0..1).map(|_| reverb::Reverb::new(200,0.6,400).clone()).collect(),
+            debug_counter: 0,
         }
     }
 }
@@ -68,32 +73,44 @@ impl Default for GainParams {
         Self {
             editor_state: EguiState::from_size(WIDTH, HEIGHT),
 
-            reverb_type: IntParam::new(
-                "Type",
-                0,
-                IntRange::Linear { min: 0, max: 2 },
+            reverb_stack: IntParam::new(
+                "Stack",
+                5,
+                IntRange::Linear { min: 1, max: 20 },
             )
-            .with_smoother(SmoothingStyle::Logarithmic(30.0))
-            .with_unit(" Type"),
+            .with_smoother(SmoothingStyle::Linear(30.0))
+            .with_unit(" Stack"),
 
             reverb_delay: IntParam::new(
                 "Reverb Delay",
-                100,
-                IntRange::Linear { min: 1, max: 2000 },
+                2000,
+                IntRange::Linear { min: 200, max: 8000 },
             )
-            .with_smoother(SmoothingStyle::Linear(200.0))
+            .with_smoother(SmoothingStyle::Linear(50.0))
             .with_unit(" Delay"),
 
             reverb_decay: FloatParam::new(
                 "Reverb Decay",
-                0.0,
-                FloatRange::Linear {
+                0.29,
+                FloatRange::Skewed {
                     min: 0.0,
                     max: 0.999,
+                    factor: 0.7,
                 },
             )
             .with_smoother(SmoothingStyle::Linear(30.0))
             .with_unit(" Decay"),
+
+            reverb_skew: FloatParam::new(
+                "Reverb Skew",
+                1.0,
+                FloatRange::Linear {
+                    min: 0.1,
+                    max: 2.0,
+                },
+            )
+            .with_smoother(SmoothingStyle::Linear(30.0))
+            .with_unit(" Skew"),
 
             reverb_gain: FloatParam::new(
                 "Reverb Gain",
@@ -193,11 +210,11 @@ impl Plugin for Gain {
                             ui.horizontal(|ui| {
                                 let knob_size = 40.0;
                                 ui.vertical(|ui| {
-                                    let mut type_knob = ui_knob::ArcKnob::for_param(&params.reverb_type, setter, knob_size + 8.0);
-                                    type_knob.preset_style(ui_knob::KnobStyle::MediumThin);
-                                    type_knob.set_fill_color(A_KNOB_INSIDE_COLOR);
-                                    type_knob.set_line_color(A_KNOB_OUTSIDE_COLOR);
-                                    ui.add(type_knob);
+                                    let mut stack_knob = ui_knob::ArcKnob::for_param(&params.reverb_stack, setter, knob_size + 8.0);
+                                    stack_knob.preset_style(ui_knob::KnobStyle::MediumThin);
+                                    stack_knob.set_fill_color(A_KNOB_INSIDE_COLOR);
+                                    stack_knob.set_line_color(A_KNOB_OUTSIDE_COLOR);
+                                    ui.add(stack_knob);
 
                                     let mut output_knob = ui_knob::ArcKnob::for_param(&params.output_gain, setter, knob_size);
                                     output_knob.preset_style(ui_knob::KnobStyle::SmallTogether);
@@ -231,6 +248,14 @@ impl Plugin for Gain {
                                     r_gain_knob.set_line_color(A_KNOB_OUTSIDE_COLOR);
                                     ui.add(r_gain_knob);
                                 });
+
+                                ui.vertical(|ui| {
+                                    let mut skew_knob = ui_knob::ArcKnob::for_param(&params.reverb_skew, setter, knob_size);
+                                    skew_knob.preset_style(ui_knob::KnobStyle::MediumThin);
+                                    skew_knob.set_fill_color(A_KNOB_INSIDE_COLOR);
+                                    skew_knob.set_line_color(A_KNOB_OUTSIDE_COLOR);
+                                    ui.add(skew_knob);
+                                });
                             });
                         });
                     });
@@ -259,9 +284,10 @@ impl Plugin for Gain {
             let mut processed_sample_l: f32;
             let mut processed_sample_r: f32;
 
-            let reverb_type: i32 = self.params.reverb_type.smoothed.next();
+            let reverb_stack: i32 = self.params.reverb_stack.smoothed.next();
             let reverb_delay: i32 = self.params.reverb_delay.smoothed.next();
             let reverb_decay: f32 = self.params.reverb_decay.smoothed.next();
+            let reverb_skew: f32 = self.params.reverb_skew.smoothed.next();
             let reverb_gain: f32 = self.params.reverb_gain.smoothed.next();
             let output_gain: f32 = self.params.output_gain.smoothed.next();
             let dry_wet: f32 = self.params.dry_wet.value();
@@ -271,21 +297,68 @@ impl Plugin for Gain {
             let in_r = *channel_samples.get_mut(1).unwrap();
             
             ///////////////////////////////////////////////////////////////////////
+            
+            let temp_l_len: i32 = self.reverb_l_array.len() as i32;
+            let temp_r_len: i32 = self.reverb_r_array.len() as i32;
+            let temp_buffer: usize = reverb_delay as usize * 2 as usize;
+            
+            // Create or remove reverb stacks
+            if reverb_stack < temp_l_len
+            {
+                self.reverb_l_array.pop();
+            }
+            else if reverb_stack > temp_l_len
+            {
+                let temp_delay_l = reverb_delay/temp_l_len;
+                self.reverb_l_array.push(reverb::Reverb::new(temp_delay_l,reverb_decay,temp_buffer));
+            }
+            if reverb_stack < temp_r_len
+            {
+                self.reverb_r_array.pop();
+            }
+            else if reverb_stack > temp_r_len
+            {
+                let temp_delay_r = reverb_delay/temp_r_len;
+                self.reverb_r_array.push(reverb::Reverb::new(temp_delay_r,reverb_decay,temp_buffer));
+            }
 
-            self.tdl_l.update(reverb_delay, reverb_decay);
-            self.tdl_r.update(reverb_delay, reverb_decay);
+            let size_l = self.reverb_l_array.len();
+            let size_r = self.reverb_r_array.len();
+            // Update our reverb stacks
+            let mut elem: i32 = 1;
+            for (left, right) in 
+                self.reverb_l_array.iter_mut().zip(
+                self.reverb_r_array.iter_mut()) {
+                //nih_log!("Array Element {}",count);
+                left.update(reverb_delay/elem, reverb_decay);
+                right.update(reverb_delay/elem, reverb_decay);
+                //nih_log!("Left side {}", left.display());
+                //nih_log!("Right side {}", right.display());
+                elem += 1;
+            }
 
-            // Process Audio
-            processed_sample_l = self.tdl_l.process(in_l) * reverb_gain;
-            processed_sample_r = self.tdl_r.process(in_r) * reverb_gain;
 
+            // Set initial
+            processed_sample_l = in_l;
+            processed_sample_r = in_r;
+
+            // Process our stacks
+            for (left, right) in 
+                self.reverb_l_array.iter_mut().zip(
+                self.reverb_r_array.iter_mut()) {
+                processed_sample_l = left.process(processed_sample_l);
+                processed_sample_r = right.process(processed_sample_r);
+            }
+                        
             ///////////////////////////////////////////////////////////////////////
 
             // Calculate dry/wet mix
+            /*
             let wet_gain: f32 = dry_wet;
             processed_sample_l = in_l + processed_sample_l * wet_gain;
             processed_sample_r = in_r + processed_sample_r * wet_gain;
-
+            */
+            
             // Output gain
             processed_sample_l *= output_gain;
             processed_sample_r *= output_gain;
