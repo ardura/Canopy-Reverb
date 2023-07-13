@@ -4,7 +4,7 @@ mod reverb;
 use nih_plug::{prelude::*};
 use nih_plug_egui::{create_egui_editor, egui::{self, Color32, Rect, Rounding, RichText, FontId, Pos2}, EguiState};
 use reverb::Reverb;
-use std::{sync::{Arc}, ops::RangeInclusive};
+use std::{sync::{Arc}, ops::RangeInclusive, rt::panic_count::count_is_zero};
 
 /***************************************************************************
  * Subhoofer v2 by Ardura
@@ -255,24 +255,26 @@ impl Plugin for Gain {
                                     decay_knob.set_line_color(A_KNOB_OUTSIDE_COLOR);
                                     ui.add(decay_knob);
 
-                                    /*
                                     let mut r_gain_knob = ui_knob::ArcKnob::for_param(&params.reverb_gain, setter, knob_size + 8.0);
                                     r_gain_knob.preset_style(ui_knob::KnobStyle::LargeMedium);
                                     r_gain_knob.set_fill_color(A_KNOB_INSIDE_COLOR);
                                     r_gain_knob.set_line_color(A_KNOB_OUTSIDE_COLOR);
                                     ui.add(r_gain_knob);
-                                    */
                                 });
 
-                                /*
                                 ui.vertical(|ui| {
-                                    let mut skew_knob = ui_knob::ArcKnob::for_param(&params.reverb_skew, setter, knob_size);
-                                    skew_knob.preset_style(ui_knob::KnobStyle::MediumThin);
-                                    skew_knob.set_fill_color(A_KNOB_INSIDE_COLOR);
-                                    skew_knob.set_line_color(A_KNOB_OUTSIDE_COLOR);
-                                    ui.add(skew_knob);
+                                    let mut step_knob = ui_knob::ArcKnob::for_param(&params.reverb_steps, setter, knob_size);
+                                    step_knob.preset_style(ui_knob::KnobStyle::MediumThin);
+                                    step_knob.set_fill_color(A_KNOB_INSIDE_COLOR);
+                                    step_knob.set_line_color(A_KNOB_OUTSIDE_COLOR);
+                                    ui.add(step_knob);
+
+                                    let mut alg_knob = ui_knob::ArcKnob::for_param(&params.reverb_step_alg, setter, knob_size);
+                                    alg_knob.preset_style(ui_knob::KnobStyle::MediumThin);
+                                    alg_knob.set_fill_color(A_KNOB_INSIDE_COLOR);
+                                    alg_knob.set_line_color(A_KNOB_OUTSIDE_COLOR);
+                                    ui.add(alg_knob);
                                 });
-                                */
                             });
                         });
                     });
@@ -322,37 +324,38 @@ impl Plugin for Gain {
             
             let mut update_bool = false;
             // Create or remove reverb stacks
-            if reverb_stack < temp_l_len
+            if reverb_stack > temp_l_len
+            {
+                self.reverb_l_array.push(Reverb::new(Reverb::generate_steps(reverb_delay, reverb_steps, reverb_step_alg),reverb_decay,temp_buffer));
+                update_bool = true;
+            }
+            else if reverb_stack < temp_l_len
             {
                 self.reverb_l_array.pop();
                 update_bool = true;
             }
-            else if reverb_stack > temp_l_len
+            if reverb_stack > temp_r_len
             {
-                // It's ok to initialize the new reverb stacks with 0 since update() will overwrite them
-                self.reverb_l_array.push(reverb::Reverb::new(vec![0,0],reverb_decay,temp_buffer));
+                self.reverb_r_array.push(Reverb::new(Reverb::generate_steps(reverb_delay, reverb_steps, reverb_step_alg),reverb_decay,temp_buffer));
                 update_bool = true;
             }
-            if reverb_stack < temp_r_len
+            else if reverb_stack < temp_r_len
             {
                 self.reverb_r_array.pop();
-                update_bool = true;
-            }
-            else if reverb_stack > temp_r_len
-            {
-                // It's ok to initialize the new reverb stacks with 0 since update() will overwrite them
-                self.reverb_r_array.push(reverb::Reverb::new(vec![0,0],reverb_decay,temp_buffer));
                 update_bool = true;
             }
 
             if update_bool == true
             {
+                let mut counter: i32 = 1;
                 // Update our reverb stacks
                 for (left, right) in 
                     self.reverb_l_array.iter_mut().zip(
                     self.reverb_r_array.iter_mut()) {
-                    left.update(Reverb::generate_steps(reverb_delay, reverb_steps, reverb_step_alg), reverb_decay);
-                    right.update(Reverb::generate_steps(reverb_delay, reverb_steps, reverb_step_alg), reverb_decay);
+                    // Integer division to scale delay with amount of stack
+                    left.update(Reverb::generate_steps(reverb_delay/counter, reverb_steps, reverb_step_alg), reverb_decay);
+                    right.update(Reverb::generate_steps(reverb_delay/counter, reverb_steps, reverb_step_alg), reverb_decay);
+                    counter += 1;
                 }
             }
 
