@@ -3,6 +3,7 @@ mod ui_knob;
 mod reverb;
 use nih_plug::{prelude::*};
 use nih_plug_egui::{create_egui_editor, egui::{self, Color32, Rect, Rounding, RichText, FontId, Pos2}, EguiState};
+use reverb::Reverb;
 use std::{sync::{Arc}, ops::RangeInclusive};
 
 /***************************************************************************
@@ -46,8 +47,11 @@ struct GainParams {
     #[id = "reverb_gain"]
     pub reverb_gain: FloatParam,
 
-    #[id = "reverb_skew"]
-    pub reverb_skew: FloatParam,
+    #[id = "reverb_steps"]
+    pub reverb_steps: IntParam,
+
+    #[id = "reverb_step_alg"]
+    pub reverb_step_alg: IntParam,
 
     #[id = "output_gain"]
     pub output_gain: FloatParam,
@@ -60,8 +64,8 @@ impl Default for Gain {
     fn default() -> Self {
         Self {
             params: Arc::new(GainParams::default()),
-            reverb_l_array: (0..1).map(|_| reverb::Reverb::new(200,0.6,400).clone()).collect(),
-            reverb_r_array: (0..1).map(|_| reverb::Reverb::new(200,0.6,400).clone()).collect(),
+            reverb_l_array: (0..1).map(|_| reverb::Reverb::new(vec![0,0],0.6,400).clone()).collect(),
+            reverb_r_array: (0..1).map(|_| reverb::Reverb::new(vec![0,0],0.6,400).clone()).collect(),
         }
     }
 }
@@ -99,16 +103,27 @@ impl Default for GainParams {
             .with_smoother(SmoothingStyle::Linear(30.0))
             .with_unit(" Decay"),
 
-            reverb_skew: FloatParam::new(
-                "Reverb Skew",
-                1.0,
-                FloatRange::Linear {
-                    min: 0.1,
-                    max: 2.0,
+            reverb_steps: IntParam::new(
+                "Reverb Steps",
+                10,
+                IntRange::Linear {
+                    min: 1,
+                    max: 30,
                 },
             )
             .with_smoother(SmoothingStyle::Linear(30.0))
-            .with_unit(" Skew"),
+            .with_unit(" Steps"),
+
+            reverb_step_alg: IntParam::new(
+                "Step Algorithm",
+                1,
+                IntRange::Linear {
+                    min: 1,
+                    max: 6,
+                },
+            )
+            .with_smoother(SmoothingStyle::Linear(30.0))
+            .with_unit(" Step Alg"),
 
             reverb_gain: FloatParam::new(
                 "Reverb Gain",
@@ -289,7 +304,8 @@ impl Plugin for Gain {
             let reverb_stack: i32 = self.params.reverb_stack.smoothed.next();
             let reverb_delay: i32 = self.params.reverb_delay.smoothed.next();
             let reverb_decay: f32 = self.params.reverb_decay.smoothed.next();
-            let reverb_skew: f32 = self.params.reverb_skew.smoothed.next();
+            let reverb_steps: i32 = self.params.reverb_steps.smoothed.next();
+            let reverb_step_alg: i32 = self.params.reverb_step_alg.smoothed.next();
             let reverb_gain: f32 = self.params.reverb_gain.smoothed.next();
             let output_gain: f32 = self.params.output_gain.smoothed.next();
             let dry_wet: f32 = self.params.dry_wet.value();
@@ -304,39 +320,41 @@ impl Plugin for Gain {
             let temp_r_len: i32 = self.reverb_r_array.len() as i32;
             let temp_buffer: usize = reverb_delay as usize * 2 as usize;
             
+            let mut update_bool = false;
             // Create or remove reverb stacks
             if reverb_stack < temp_l_len
             {
                 self.reverb_l_array.pop();
+                update_bool = true;
             }
             else if reverb_stack > temp_l_len
             {
-                let temp_delay_l = reverb_delay/temp_l_len;
-                self.reverb_l_array.push(reverb::Reverb::new(temp_delay_l,reverb_decay,temp_buffer));
+                // It's ok to initialize the new reverb stacks with 0 since update() will overwrite them
+                self.reverb_l_array.push(reverb::Reverb::new(vec![0,0],reverb_decay,temp_buffer));
+                update_bool = true;
             }
             if reverb_stack < temp_r_len
             {
                 self.reverb_r_array.pop();
+                update_bool = true;
             }
             else if reverb_stack > temp_r_len
             {
-                let temp_delay_r = reverb_delay/temp_r_len;
-                self.reverb_r_array.push(reverb::Reverb::new(temp_delay_r,reverb_decay,temp_buffer));
+                // It's ok to initialize the new reverb stacks with 0 since update() will overwrite them
+                self.reverb_r_array.push(reverb::Reverb::new(vec![0,0],reverb_decay,temp_buffer));
+                update_bool = true;
             }
 
-            // Update our reverb stacks
-            let mut elem: i32 = 1;
-            for (left, right) in 
-                self.reverb_l_array.iter_mut().zip(
-                self.reverb_r_array.iter_mut()) {
-                //nih_log!("Array Element {}",count);
-                left.update(reverb_delay/elem, reverb_decay);
-                right.update(reverb_delay/elem, reverb_decay);
-                //nih_log!("Left side {}", left.display());
-                //nih_log!("Right side {}", right.display());
-                elem += 1;
+            if update_bool == true
+            {
+                // Update our reverb stacks
+                for (left, right) in 
+                    self.reverb_l_array.iter_mut().zip(
+                    self.reverb_r_array.iter_mut()) {
+                    left.update(Reverb::generate_steps(reverb_delay, reverb_steps, reverb_step_alg), reverb_decay);
+                    right.update(Reverb::generate_steps(reverb_delay, reverb_steps, reverb_step_alg), reverb_decay);
+                }
             }
-
 
             // Set initial
             processed_sample_l = in_l;
