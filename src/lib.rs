@@ -333,7 +333,7 @@ impl Plugin for Gain {
             {
                 update_bool = true;
                 self.prev_reverb_alg = reverb_step_alg;
-                self.prev_reverb_alg = reverb_step_alg;
+                self.prev_reverb_steps = reverb_steps;
             }
 
             if update_bool == true

@@ -1,5 +1,4 @@
 use std::{sync::Arc};
-
 use nih_plug_egui::egui::mutex::Mutex;
 use nih_plug::{prelude::Enum};
 
@@ -35,7 +34,7 @@ impl Reverb {
         }
     }
 
-    // Update to new delay times + decay
+    // Update to new delay times + decay when a parameter changes that affects either
     pub fn update(&mut self, delay_times: Vec<i32>, decay: f32) {
         let mut buffer_lock = self.buffer.lock();
         let mut delay_times_lock = self.delay_times.lock();
