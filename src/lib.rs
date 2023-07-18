@@ -7,27 +7,34 @@ use reverb::{Reverb, ReverbType};
 use std::{sync::{Arc}, ops::RangeInclusive};
 
 /***************************************************************************
- * Subhoofer v2 by Ardura
+ * Canopy Reverb by Ardura
  * 
- * Build with: cargo xtask bundle subhoofer --profile <release or profiling>
+ * Build with: cargo xtask bundle CanopyReverb --profile <release or profiling>
  * *************************************************************************/
 
  // GUI Colors
-const A_KNOB_OUTSIDE_COLOR: Color32 = Color32::from_rgb(96, 150, 186);
-const A_BACKGROUND_COLOR: Color32 = Color32::from_rgb(65, 54, 32);
-const A_KNOB_INSIDE_COLOR: Color32 = Color32::from_rgb(205, 231, 176);
-const A_KNOB_OUTSIDE_COLOR2: Color32 = Color32::from_rgb(187, 52, 47);
+const A_KNOB_OUTSIDE_COLOR: Color32 = Color32::from_rgb(255, 235, 59);
+const A_BACKGROUND_COLOR: Color32 = Color32::from_rgb(0, 123, 94);
+const A_KNOB_INSIDE_COLOR: Color32 = Color32::from_rgb(233, 109, 46);
+const A_KNOB_OUTSIDE_COLOR2: Color32 = Color32::from_rgb(0, 74, 76);
+
 
 // Plugin sizing
-const WIDTH: u32 = 716;
-const HEIGHT: u32 = 140;
+const WIDTH: u32 = 820;
+const HEIGHT: u32 = 136;
 
 pub struct Gain {
     params: Arc<GainParams>,
     reverb_l_array: Vec<reverb::Reverb>,
     reverb_r_array: Vec<reverb::Reverb>,
     prev_reverb_steps: i32,
-    prev_reverb_alg: ReverbType
+    prev_reverb_alg: ReverbType,
+    prev_reverb_delay: i32,
+    prev_reverb_decay: f32,
+    prev_processed_in_l: f32,
+    prev_processed_in_r: f32,
+    prev_processed_out_l: f32,
+    prev_processed_out_r: f32,
 }
 
 #[derive(Params)]
@@ -52,6 +59,9 @@ struct GainParams {
     #[id = "reverb_step_alg"]
     pub reverb_step_alg: EnumParam<reverb::ReverbType>,
 
+    #[id = "reverb_width"]
+    pub reverb_width: FloatParam,
+
     #[id = "output_gain"]
     pub output_gain: FloatParam,
 
@@ -66,7 +76,13 @@ impl Default for Gain {
             reverb_l_array: (0..1).map(|_| reverb::Reverb::new(vec![0,0],0.6,400).clone()).collect(),
             reverb_r_array: (0..1).map(|_| reverb::Reverb::new(vec![0,0],0.6,400).clone()).collect(),
             prev_reverb_steps: 0,
-            prev_reverb_alg: ReverbType::ExpSwirl
+            prev_reverb_alg: ReverbType::ExpSwirl,
+            prev_reverb_delay: 0,
+            prev_reverb_decay: 0.0,
+            prev_processed_in_l: 0.0,
+            prev_processed_in_r: 0.0,
+            prev_processed_out_l: 0.0,
+            prev_processed_out_r: 0.0,
         }
     }
 }
@@ -79,7 +95,7 @@ impl Default for GainParams {
             reverb_stack: IntParam::new(
                 "Stack",
                 4,
-                IntRange::Linear { min: 1, max: 4 },
+                IntRange::Linear { min: 1, max: 12 },
             )
             .with_smoother(SmoothingStyle::Linear(30.0))
             .with_unit(" Stack"),
@@ -102,14 +118,24 @@ impl Default for GainParams {
                 },
             )
             .with_smoother(SmoothingStyle::Linear(30.0))
+            .with_value_to_string(formatters::v2s_f32_rounded(3))
             .with_unit(" Decay"),
+
+            reverb_width: FloatParam::new(
+                "Reverb Width",
+                0.83,
+                FloatRange::Linear { min: 0.0, max: 1.0 },
+            )
+            .with_smoother(SmoothingStyle::Linear(30.0))
+            .with_value_to_string(formatters::v2s_f32_rounded(2))
+            .with_unit(" Width"),
 
             reverb_steps: IntParam::new(
                 "Reverb Steps",
                 10,
                 IntRange::Linear {
                     min: 2,
-                    max: 16,
+                    max: 36,
                 },
             )
             .with_smoother(SmoothingStyle::Linear(30.0))
@@ -150,7 +176,7 @@ impl Default for GainParams {
 }
 
 impl Plugin for Gain {
-    const NAME: &'static str = "Tapverb";
+    const NAME: &'static str = "Canopy Reverb";
     const VENDOR: &'static str = "Ardura";
     const URL: &'static str = "https://github.com/ardura";
     const EMAIL: &'static str = "azviscarra@gmail.com";
@@ -174,6 +200,7 @@ impl Plugin for Gain {
 
     fn editor(&mut self, _async_executor: AsyncExecutor<Self>) -> Option<Box<dyn Editor>> {
         let params = self.params.clone();
+
         create_egui_editor(
             self.params.editor_state.clone(),
             (),
@@ -203,7 +230,9 @@ impl Plugin for Gain {
                         // GUI Structure
                         ui.vertical(|ui| {
                             // Spacing :)
-                            ui.label(RichText::new("    Tapverb").font(FontId::monospace(14.0)).color(A_KNOB_OUTSIDE_COLOR2)).on_hover_text("by Ardura!");
+                            ui.horizontal(|ui| {
+                                ui.label(RichText::new("    Canopy Reverb").font(FontId::monospace(14.0)).color(A_KNOB_OUTSIDE_COLOR2)).on_hover_text("by Ardura!");
+                            });
 
                             ui.horizontal(|ui| {
                                 let knob_size = 36.0;
@@ -221,7 +250,7 @@ impl Plugin for Gain {
                                 ui.add(stack_knob);
 
                                 let mut alg_knob = ui_knob::ArcKnob::for_param(&params.reverb_step_alg, setter, knob_size);
-                                alg_knob.preset_style(ui_knob::KnobStyle::MediumThin);
+                                alg_knob.preset_style(ui_knob::KnobStyle::SmallTogether);
                                 alg_knob.set_fill_color(A_KNOB_OUTSIDE_COLOR2);
                                 alg_knob.set_line_color(A_KNOB_OUTSIDE_COLOR);
                                 ui.add(alg_knob);
@@ -233,10 +262,16 @@ impl Plugin for Gain {
                                 ui.add(decay_knob);
 
                                 let mut step_knob = ui_knob::ArcKnob::for_param(&params.reverb_steps, setter, knob_size);
-                                step_knob.preset_style(ui_knob::KnobStyle::MediumThin);
+                                step_knob.preset_style(ui_knob::KnobStyle::LargeMedium);
                                 step_knob.set_fill_color(A_KNOB_INSIDE_COLOR);
                                 step_knob.set_line_color(A_KNOB_OUTSIDE_COLOR);
                                 ui.add(step_knob);
+
+                                let mut width_knob = ui_knob::ArcKnob::for_param(&params.reverb_width, setter, knob_size);
+                                width_knob.preset_style(ui_knob::KnobStyle::LargeMedium);
+                                width_knob.set_fill_color(A_KNOB_INSIDE_COLOR);
+                                width_knob.set_line_color(A_KNOB_OUTSIDE_COLOR);
+                                ui.add(width_knob);
 
                                 let mut dry_wet_knob = ui_knob::ArcKnob::for_param(&params.dry_wet, setter, knob_size);
                                 dry_wet_knob.preset_style(ui_knob::KnobStyle::SmallTogether);
@@ -280,6 +315,7 @@ impl Plugin for Gain {
             let reverb_stack: i32 = self.params.reverb_stack.smoothed.next();
             let reverb_delay: i32 = self.params.reverb_delay.smoothed.next();
             let reverb_decay: f32 = self.params.reverb_decay.smoothed.next();
+            let reverb_width: f32 = self.params.reverb_width.smoothed.next();
             let reverb_steps: i32 = self.params.reverb_steps.smoothed.next();
             let reverb_step_alg: reverb::ReverbType = self.params.reverb_step_alg.value();
             let output_gain: f32 = self.params.output_gain.smoothed.next();
@@ -329,11 +365,13 @@ impl Plugin for Gain {
                 }
                 update_bool = true;
             }
-            if reverb_steps != self.prev_reverb_steps || reverb_step_alg != self.prev_reverb_alg
+            if reverb_steps != self.prev_reverb_steps || reverb_step_alg != self.prev_reverb_alg || reverb_delay != self.prev_reverb_delay  || reverb_decay != self.prev_reverb_decay
             {
                 update_bool = true;
                 self.prev_reverb_alg = reverb_step_alg;
                 self.prev_reverb_steps = reverb_steps;
+                self.prev_reverb_delay = reverb_delay;
+                self.prev_reverb_decay = reverb_decay;
             }
 
             if update_bool == true
@@ -361,6 +399,36 @@ impl Plugin for Gain {
                 processed_sample_l += left.process(processed_sample_l);
                 processed_sample_r += right.process(processed_sample_r);
             }
+
+            // Reverb width control
+            let widthInv = 1.0 - reverb_width;
+            let mid = (processed_sample_l + processed_sample_r)*0.5;
+            processed_sample_l  = widthInv * mid + reverb_width * processed_sample_l;
+            processed_sample_r = widthInv * mid + reverb_width * processed_sample_r;
+
+            // Calculated below by Ardura in advance!
+            // double sqrt2 = 1.41421356237;
+            // double corner_frequency = 5.0 / sqrt2;
+            // double hp_gain = 1 / sqrt(1 + (5.0 / (corner_frequency)) ^ 2);
+            // Remove DC Offset with single pole HP
+            let hp_b0: f32 = 1.0;
+            let hp_b1: f32 = -1.0;
+            let hp_a1: f32 = -0.995;
+            let hp_gain = 1.0;
+        
+            // Apply the 1 pole HP to left side
+            processed_sample_l = hp_gain * processed_sample_l;
+            let temp_sample: f32 = hp_b0 * processed_sample_l + hp_b1 * self.prev_processed_in_l - hp_a1 * self.prev_processed_out_l;
+            self.prev_processed_in_l = processed_sample_l;
+            self.prev_processed_out_l = temp_sample;
+            processed_sample_l = temp_sample;
+
+            // Apply the 1 pole HP to right side
+            processed_sample_r = hp_gain * processed_sample_r;
+            let temp_sample: f32 = hp_b0 * processed_sample_r + hp_b1 * self.prev_processed_in_r - hp_a1 * self.prev_processed_out_r;
+            self.prev_processed_in_r = processed_sample_r;
+            self.prev_processed_out_r = temp_sample;
+            processed_sample_r = temp_sample;
                         
             ///////////////////////////////////////////////////////////////////////
 
@@ -400,7 +468,7 @@ impl Plugin for Gain {
 }
 
 impl ClapPlugin for Gain {
-    const CLAP_ID: &'static str = "com.ardura.tapverb";
+    const CLAP_ID: &'static str = "com.ardura.canopyreverb";
     const CLAP_DESCRIPTION: Option<&'static str> = Some("Reverb Experiment");
     const CLAP_MANUAL_URL: Option<&'static str> = Some(Self::URL);
     const CLAP_SUPPORT_URL: Option<&'static str> = None;
@@ -413,7 +481,7 @@ impl ClapPlugin for Gain {
 }
 
 impl Vst3Plugin for Gain {
-    const VST3_CLASS_ID: [u8; 16] = *b"TapverbArduraAAA";
+    const VST3_CLASS_ID: [u8; 16] = *b"CanopyReverbArda";
     const VST3_SUBCATEGORIES: &'static [Vst3SubCategory] =
         &[Vst3SubCategory::Fx, Vst3SubCategory::Reverb];
 }
