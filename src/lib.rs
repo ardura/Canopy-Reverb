@@ -2,7 +2,7 @@
 mod ui_knob;
 mod reverb;
 use nih_plug::{prelude::*};
-use nih_plug_egui::{create_egui_editor, egui::{self, Color32, Rect, Rounding, RichText, FontId, Pos2}, EguiState};
+use nih_plug_egui::{create_egui_editor, egui::{self, Color32, Rect, Rounding, RichText, FontId, Pos2}, EguiState, widgets::ParamSlider};
 use reverb::{Reverb, ReverbType};
 use std::{sync::{Arc}, ops::RangeInclusive};
 
@@ -21,7 +21,7 @@ const A_KNOB_OUTSIDE_COLOR2: Color32 = Color32::from_rgb(0, 74, 76);
 
 // Plugin sizing
 const WIDTH: u32 = 820;
-const HEIGHT: u32 = 136;
+const HEIGHT: u32 = 180;
 
 pub struct Gain {
     params: Arc<GainParams>,
@@ -61,6 +61,12 @@ struct GainParams {
 
     #[id = "reverb_width"]
     pub reverb_width: FloatParam,
+
+    #[id = "reverb_low_cut"]
+    pub reverb_low_cut: FloatParam,
+
+    #[id = "reverb_high_cut"]
+    pub reverb_high_cut: FloatParam,
 
     #[id = "output_gain"]
     pub output_gain: FloatParam,
@@ -143,6 +149,34 @@ impl Default for GainParams {
 
             reverb_step_alg: EnumParam::new("Step Alg",reverb::ReverbType::ExpSwirl),
 
+            reverb_low_cut: FloatParam::new(
+                "Reverb Low Cut",
+                400.0,
+                FloatRange::Linear {
+                    min: 20.0,
+                    max: 12000.0,
+                },
+            )
+            .with_smoother(SmoothingStyle::Linear(30.0))
+            .with_string_to_value(formatters::s2v_f32_hz_then_khz())
+            .with_value_to_string(formatters::v2s_f32_hz_then_khz(2))
+            .with_unit(" Low Cut")
+            ,
+
+            reverb_high_cut: FloatParam::new(
+                "Reverb High Cut",
+                18000.0,
+                FloatRange::Linear {
+                    min: 1000.0,
+                    max: 18000.0,
+                },
+            )
+            .with_smoother(SmoothingStyle::Linear(30.0))
+            .with_string_to_value(formatters::s2v_f32_hz_then_khz())
+            .with_value_to_string(formatters::v2s_f32_hz_then_khz(2))
+            .with_unit(" High Cut")
+            ,
+
             // Output gain parameter
             output_gain: FloatParam::new(
                 "Output Gain",
@@ -209,7 +243,24 @@ impl Plugin for Gain {
                 egui::CentralPanel::default()
                     .show(egui_ctx, |ui| {
                         // Change colors - there's probably a better way to do this
-                        let style_var = ui.style_mut().clone();
+                        let mut style_var = ui.style_mut().clone();
+
+                        // Assign default colors if user colors not set
+                        style_var.visuals.widgets.inactive.fg_stroke.color = A_KNOB_INSIDE_COLOR;
+                        style_var.visuals.widgets.noninteractive.fg_stroke.color = A_KNOB_INSIDE_COLOR;
+                        style_var.visuals.widgets.inactive.bg_stroke.color = A_KNOB_INSIDE_COLOR;
+                        style_var.visuals.widgets.inactive.bg_fill = A_BACKGROUND_COLOR;
+                        style_var.visuals.widgets.active.fg_stroke.color = A_KNOB_INSIDE_COLOR;
+                        style_var.visuals.widgets.active.bg_stroke.color = A_KNOB_OUTSIDE_COLOR;
+                        style_var.visuals.widgets.open.fg_stroke.color = A_KNOB_INSIDE_COLOR;
+                        style_var.visuals.widgets.open.bg_fill = A_BACKGROUND_COLOR;
+                        // Param fill
+                        style_var.visuals.selection.bg_fill = A_KNOB_OUTSIDE_COLOR2;
+                        style_var.visuals.selection.stroke.color = A_KNOB_OUTSIDE_COLOR2;
+
+                        style_var.visuals.widgets.noninteractive.bg_stroke.color = A_KNOB_INSIDE_COLOR;
+                        style_var.visuals.widgets.noninteractive.fg_stroke.color = A_KNOB_INSIDE_COLOR;
+                        style_var.visuals.widgets.noninteractive.bg_fill = A_BACKGROUND_COLOR;
 
                         // Trying to draw background as rect
                         ui.painter().rect_filled(
@@ -284,6 +335,17 @@ impl Plugin for Gain {
                                 output_knob.set_fill_color(A_KNOB_OUTSIDE_COLOR2);
                                 output_knob.set_line_color(A_KNOB_OUTSIDE_COLOR);
                                 ui.add(output_knob);
+                            });
+
+                            let spacer_size = 16.0;
+                            ui.horizontal(|ui| {
+                                ui.add_space(spacer_size);
+                                ui.add(ParamSlider::for_param(&params.reverb_low_cut, setter).with_width(WIDTH as f32 - 170.0));
+                            });
+
+                            ui.horizontal(|ui| {
+                                ui.add_space(spacer_size);
+                                ui.add(ParamSlider::for_param(&params.reverb_high_cut, setter).with_width(WIDTH as f32 - 170.0));
                             });
                         });
                     });
