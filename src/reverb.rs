@@ -11,7 +11,13 @@ pub enum ReverbType{
     #[name = "Geo Phase"]
     GeoPhase,
     #[name = "Quad Metal"]
-    QuadMetal
+    QuadMetal,
+    #[name = "Specific Swirl"]
+    SpecificSwirl,
+    #[name = "Chaos Steps"]
+    ChaosSteps,
+    #[name = "Golden Ratio"]
+    GoldenRatio
 }
 
 #[derive(Clone)]
@@ -97,7 +103,34 @@ impl Reverb {
                     let value = input_number;
                     let step = input_number / (number_of_integers);
                     output_vector.push(value - step);
-                }
+                },
+                // Specific Swirl
+                // Reverb TDLs expanding at an arbitrary multiplier
+                ReverbType::SpecificSwirl => {
+                    let mut value = input_number;
+                    value *= 4;
+                    value -= 1;
+                    output_vector.push(value);
+                },
+                // Chaos Steps
+                // Not really sure how to descrive but it sounds cool
+                ReverbType::ChaosSteps => {
+                    let mut x = input_number;
+                    let mut y = number_of_integers;
+                    for _ in 1..number_of_integers {
+                        let z = (x + y) / 2;
+                        let step = input_number*2 - 1;
+                        x = z + step;
+                        y = z - step;
+                        output_vector.push(x);
+                    }
+                },
+                // Golden Ratio
+                ReverbType::GoldenRatio => {
+                    let gr = 1.618;
+                    let value = (gr * i as f32).floor() as i32;
+                    output_vector.push(value);
+                },
             }
         }
         output_vector
