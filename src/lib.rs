@@ -1,6 +1,7 @@
 #![allow(non_snake_case)]
 mod ui_knob;
 mod reverb;
+mod filters;
 use nih_plug::{prelude::*};
 use nih_plug_egui::{create_egui_editor, egui::{self, Color32, Rect, Rounding, RichText, FontId, Pos2}, EguiState, widgets::ParamSlider};
 use reverb::{Reverb, ReverbType};
@@ -21,7 +22,7 @@ const A_KNOB_OUTSIDE_COLOR2: Color32 = Color32::from_rgb(0, 74, 76);
 
 // Plugin sizing
 const WIDTH: u32 = 820;
-const HEIGHT: u32 = 180;
+const HEIGHT: u32 = 160;
 
 pub struct Gain {
     params: Arc<GainParams>,
@@ -35,6 +36,11 @@ pub struct Gain {
     prev_processed_in_r: f32,
     prev_processed_out_l: f32,
     prev_processed_out_r: f32,
+    prev_low_cut: f32,
+    prev_high_cut: f32,
+    //low_filter: filters::ButterworthFilter,
+    high_filter_l: filters::LowpassFilter,
+    high_filter_r: filters::LowpassFilter,
 }
 
 #[derive(Params)]
@@ -89,6 +95,11 @@ impl Default for Gain {
             prev_processed_in_r: 0.0,
             prev_processed_out_l: 0.0,
             prev_processed_out_r: 0.0,
+            prev_low_cut: 0.0,
+            prev_high_cut: 0.0,
+            //low_filter: filters::ButterworthFilter::new(true, 1, 400.0, context::, vec![0.0]),
+            high_filter_l: filters::LowpassFilter::new(400.0,3),
+            high_filter_r: filters::LowpassFilter::new(400.0,3),
         }
     }
 }
@@ -154,7 +165,7 @@ impl Default for GainParams {
                 400.0,
                 FloatRange::Linear {
                     min: 20.0,
-                    max: 12000.0,
+                    max: 10000.0,
                 },
             )
             .with_smoother(SmoothingStyle::Linear(30.0))
@@ -165,10 +176,10 @@ impl Default for GainParams {
 
             reverb_high_cut: FloatParam::new(
                 "Reverb High Cut",
-                18000.0,
+                1.0,
                 FloatRange::Linear {
-                    min: 1000.0,
-                    max: 18000.0,
+                    min: 0.0,
+                    max: 1.0,
                 },
             )
             .with_smoother(SmoothingStyle::Linear(30.0))
@@ -246,21 +257,25 @@ impl Plugin for Gain {
                         let mut style_var = ui.style_mut().clone();
 
                         // Assign default colors if user colors not set
-                        style_var.visuals.widgets.inactive.fg_stroke.color = A_KNOB_INSIDE_COLOR;
-                        style_var.visuals.widgets.noninteractive.fg_stroke.color = A_KNOB_INSIDE_COLOR;
-                        style_var.visuals.widgets.inactive.bg_stroke.color = A_KNOB_INSIDE_COLOR;
+                        
+                        style_var.visuals.widgets.inactive.bg_stroke.color = A_KNOB_OUTSIDE_COLOR;
                         style_var.visuals.widgets.inactive.bg_fill = A_BACKGROUND_COLOR;
-                        style_var.visuals.widgets.active.fg_stroke.color = A_KNOB_INSIDE_COLOR;
+                        style_var.visuals.widgets.active.fg_stroke.color = A_KNOB_OUTSIDE_COLOR;
                         style_var.visuals.widgets.active.bg_stroke.color = A_KNOB_OUTSIDE_COLOR;
-                        style_var.visuals.widgets.open.fg_stroke.color = A_KNOB_INSIDE_COLOR;
+                        style_var.visuals.widgets.open.fg_stroke.color = A_KNOB_OUTSIDE_COLOR;
                         style_var.visuals.widgets.open.bg_fill = A_BACKGROUND_COLOR;
-                        // Param fill
-                        style_var.visuals.selection.bg_fill = A_KNOB_OUTSIDE_COLOR2;
-                        style_var.visuals.selection.stroke.color = A_KNOB_OUTSIDE_COLOR2;
-
-                        style_var.visuals.widgets.noninteractive.bg_stroke.color = A_KNOB_INSIDE_COLOR;
-                        style_var.visuals.widgets.noninteractive.fg_stroke.color = A_KNOB_INSIDE_COLOR;
+                        // Param slider fill
+                        ///////////////////////////////////////////
+                        // Lettering on param sliders
+                        style_var.visuals.widgets.inactive.fg_stroke.color = A_KNOB_OUTSIDE_COLOR;
+                        // Background of the bar in param sliders
+                        style_var.visuals.selection.bg_fill = A_KNOB_INSIDE_COLOR;
+                        style_var.visuals.selection.stroke.color = A_KNOB_INSIDE_COLOR;
+                        // Unfilled background of the bar
                         style_var.visuals.widgets.noninteractive.bg_fill = A_BACKGROUND_COLOR;
+                        //style_var.visuals.widgets.noninteractive.bg_stroke.color = A_KNOB_OUTSIDE_COLOR;
+                        //style_var.visuals.widgets.noninteractive.fg_stroke.color = A_KNOB_OUTSIDE_COLOR;
+                        
 
                         // Trying to draw background as rect
                         ui.painter().rect_filled(
@@ -282,7 +297,7 @@ impl Plugin for Gain {
                         ui.vertical(|ui| {
                             // Spacing :)
                             ui.horizontal(|ui| {
-                                ui.label(RichText::new("    Canopy Reverb").font(FontId::monospace(14.0)).color(A_KNOB_OUTSIDE_COLOR2)).on_hover_text("by Ardura!");
+                                ui.label(RichText::new("    Canopy Reverb").font(FontId::monospace(14.0)).color(A_KNOB_OUTSIDE_COLOR)).on_hover_text("by Ardura!");
                             });
 
                             ui.horizontal(|ui| {
@@ -340,12 +355,9 @@ impl Plugin for Gain {
                             let spacer_size = 16.0;
                             ui.horizontal(|ui| {
                                 ui.add_space(spacer_size);
-                                ui.add(ParamSlider::for_param(&params.reverb_low_cut, setter).with_width(WIDTH as f32 - 170.0));
-                            });
-
-                            ui.horizontal(|ui| {
+                                ui.add(ParamSlider::for_param(&params.reverb_low_cut, setter).with_width((WIDTH as f32 - 180.0)*0.4));
                                 ui.add_space(spacer_size);
-                                ui.add(ParamSlider::for_param(&params.reverb_high_cut, setter).with_width(WIDTH as f32 - 170.0));
+                                ui.add(ParamSlider::for_param(&params.reverb_high_cut, setter).with_width((WIDTH as f32 - 180.0)*0.4));
                             });
                         });
                     });
@@ -379,6 +391,8 @@ impl Plugin for Gain {
             let reverb_decay: f32 = self.params.reverb_decay.smoothed.next();
             let reverb_width: f32 = self.params.reverb_width.smoothed.next();
             let reverb_steps: i32 = self.params.reverb_steps.smoothed.next();
+            let reverb_low_cut: f32 = self.params.reverb_low_cut.smoothed.next();
+            let reverb_high_cut: f32 = self.params.reverb_high_cut.smoothed.next();
             let reverb_step_alg: reverb::ReverbType = self.params.reverb_step_alg.value();
             let output_gain: f32 = self.params.output_gain.smoothed.next();
             let dry_wet: f32 = self.params.dry_wet.value();
@@ -427,13 +441,20 @@ impl Plugin for Gain {
                 }
                 update_bool = true;
             }
-            if reverb_steps != self.prev_reverb_steps || reverb_step_alg != self.prev_reverb_alg || reverb_delay != self.prev_reverb_delay  || reverb_decay != self.prev_reverb_decay
+            if reverb_steps != self.prev_reverb_steps || 
+               reverb_step_alg != self.prev_reverb_alg || 
+               reverb_delay != self.prev_reverb_delay  || 
+               reverb_decay != self.prev_reverb_decay ||
+               reverb_low_cut != self.prev_low_cut ||
+               reverb_high_cut != self.prev_high_cut
             {
                 update_bool = true;
                 self.prev_reverb_alg = reverb_step_alg;
                 self.prev_reverb_steps = reverb_steps;
                 self.prev_reverb_delay = reverb_delay;
                 self.prev_reverb_decay = reverb_decay;
+                self.prev_low_cut = reverb_low_cut;
+                self.prev_high_cut = reverb_high_cut;
             }
 
             if update_bool == true
@@ -448,6 +469,10 @@ impl Plugin for Gain {
                     right.update(Reverb::generate_steps(reverb_delay/counter, reverb_steps, reverb_step_alg), reverb_decay);
                     counter += 1;
                 }
+                // Update our filter(s)
+                //self.low_filter.calc_butterworth_coeffs();
+                self.high_filter_l.update_cutoff(reverb_high_cut);
+                self.high_filter_r.update_cutoff(reverb_high_cut);
             }
 
             // Set initial
@@ -462,17 +487,25 @@ impl Plugin for Gain {
                 processed_sample_r += right.process(processed_sample_r);
             }
 
+            // Low cut
+            //processed_sample_l = self.low_filter.apply_filter(processed_sample_l);
+            //processed_sample_r = self.low_filter.apply_filter(processed_sample_r);
+
+            // High cut
+            processed_sample_l = self.high_filter_l.apply_filter(processed_sample_l);
+            processed_sample_r = self.high_filter_r.apply_filter(processed_sample_r);
+
             // Reverb width control
             let widthInv = 1.0 - reverb_width;
             let mid = (processed_sample_l + processed_sample_r)*0.5;
             processed_sample_l  = widthInv * mid + reverb_width * processed_sample_l;
             processed_sample_r = widthInv * mid + reverb_width * processed_sample_r;
 
+            // Remove DC Offset with single pole HP
             // Calculated below by Ardura in advance!
             // double sqrt2 = 1.41421356237;
             // double corner_frequency = 5.0 / sqrt2;
             // double hp_gain = 1 / sqrt(1 + (5.0 / (corner_frequency)) ^ 2);
-            // Remove DC Offset with single pole HP
             let hp_b0: f32 = 1.0;
             let hp_b1: f32 = -1.0;
             let hp_a1: f32 = -0.995;

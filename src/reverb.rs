@@ -4,19 +4,19 @@ use nih_plug::{prelude::Enum};
 
 #[derive(Enum, PartialEq, Eq, Debug, Copy, Clone)]
 pub enum ReverbType{
-    #[name = "Linear Small"]
+    #[name = "Alg:Linear Small"]
     LinearSmall,
-    #[name = "Exp Swirl"]
+    #[name = "Alg:Exp Swirl"]
     ExpSwirl,
-    #[name = "Geo Phase"]
+    #[name = "Alg:Geo Phase"]
     GeoPhase,
-    #[name = "Quad Metal"]
+    #[name = "Alg:Quad Metal"]
     QuadMetal,
-    #[name = "Specific Swirl"]
+    #[name = "Alg:Specific Swirl"]
     SpecificSwirl,
-    #[name = "Chaos Steps"]
+    #[name = "Alg:Chaos Steps"]
     ChaosSteps,
-    #[name = "Golden Ratio"]
+    #[name = "Alg:Golden Ratio"]
     GoldenRatio
 }
 
