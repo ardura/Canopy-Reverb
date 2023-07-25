@@ -1,37 +1,64 @@
-use std::f32::consts::PI;
+// Filters for rust plugins inspired by Airwindows iir filter format
+// by Ardura
 
-pub(crate) struct LowpassFilter {
+#[derive(Clone, Copy)]
+pub(crate) struct StereoFilter {
     cutoff_frequency: f32,
-    num_recursions: usize,
-
-    lowpass_samples: Vec<f32>,
+    l_old: f32,
+	r_old: f32,
+	l_old2: f32,
+	r_old2: f32,
+	lowpass: bool,
 }
 
-impl LowpassFilter {
-    pub fn new(cutoff_frequency: f32, num_recursions: usize) -> Self {
-        Self {
-            cutoff_frequency: 2.0 * PI * cutoff_frequency,
-            num_recursions,
-            lowpass_samples: vec![0.0; num_recursions],
+impl StereoFilter {
+    pub(crate) fn new(cutoff_frequency: f32, lowpass: bool) -> StereoFilter {
+        StereoFilter {
+            cutoff_frequency,
+            l_old: 0.0,
+			r_old: 0.0,
+			l_old2: 0.0,
+			r_old2: 0.0,
+			lowpass,
         }
     }
 
-    pub fn update_cutoff(&mut self, new_frequency: f32) {
-        self.cutoff_frequency = new_frequency;
-    }
+	/// Update Cutoff frequency and filtertype
+	pub(crate) fn update_params(&mut self, cutoff_frequency: f32, lowpass: bool) {
+		self.lowpass = lowpass;
+		self.cutoff_frequency = cutoff_frequency;
+	}
 
-    pub fn apply_filter(&mut self, sample: f32) -> f32 {
-        let mut output = 0.0;
+	/// Perform filtering on left and right audio using the struct
+    pub(crate) fn filter(&mut self, left: f32, right: f32) -> (f32,f32) {
+		let mut l_filtered;
+		let mut r_filtered;
+		if self.lowpass {
+			l_filtered = (self.l_old * (1.0 - self.cutoff_frequency)) + (left * self.cutoff_frequency);
+			r_filtered = (self.r_old * (1.0 - self.cutoff_frequency)) + (right * self.cutoff_frequency);
+			self.l_old = l_filtered;
+        	self.r_old = r_filtered;
+			l_filtered = (self.l_old2 * (1.0 - self.cutoff_frequency)) + (l_filtered * self.cutoff_frequency);
+			r_filtered = (self.r_old2 * (1.0 - self.cutoff_frequency)) + (r_filtered * self.cutoff_frequency);
+			self.l_old2 = l_filtered;
+        	self.r_old2 = r_filtered;
+		}
+		else {
+			l_filtered = (self.l_old * (1.0 - self.cutoff_frequency)) + (left * self.cutoff_frequency);
+			r_filtered = (self.r_old * (1.0 - self.cutoff_frequency)) + (right * self.cutoff_frequency);
+			self.l_old = l_filtered;
+        	self.r_old = r_filtered;
+			l_filtered = (self.l_old2 * (1.0 - self.cutoff_frequency)) + (l_filtered * self.cutoff_frequency);
+			r_filtered = (self.r_old2 * (1.0 - self.cutoff_frequency)) + (r_filtered * self.cutoff_frequency);
+			self.l_old2 = l_filtered;
+        	self.r_old2 = r_filtered;
+		}
 
-        for i in 0..self.num_recursions {
-            output += self.lowpass_samples[i] * (1.0 - self.cutoff_frequency);
-        }
-
-        output += sample * self.cutoff_frequency;
-
-        self.lowpass_samples.push(output);
-        self.lowpass_samples.remove(0);
-
-        output
+		if self.lowpass {
+			(l_filtered, r_filtered)
+		}
+		else {
+			(left - self.l_old2 - self.l_old, right - self.r_old2 - self.r_old)
+		}
     }
 }

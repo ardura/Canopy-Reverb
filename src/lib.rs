@@ -38,9 +38,8 @@ pub struct Gain {
     prev_processed_out_r: f32,
     prev_low_cut: f32,
     prev_high_cut: f32,
-    //low_filter: filters::ButterworthFilter,
-    high_filter_l: filters::LowpassFilter,
-    high_filter_r: filters::LowpassFilter,
+    filter_lowpass: filters::StereoFilter,
+    filter_highpass: filters::StereoFilter,
 }
 
 #[derive(Params)]
@@ -97,9 +96,8 @@ impl Default for Gain {
             prev_processed_out_r: 0.0,
             prev_low_cut: 0.0,
             prev_high_cut: 0.0,
-            //low_filter: filters::ButterworthFilter::new(true, 1, 400.0, context::, vec![0.0]),
-            high_filter_l: filters::LowpassFilter::new(400.0,3),
-            high_filter_r: filters::LowpassFilter::new(400.0,3),
+            filter_lowpass: filters::StereoFilter::new(1.0, true),
+            filter_highpass: filters::StereoFilter::new(0.5, false),
         }
     }
 }
@@ -161,31 +159,27 @@ impl Default for GainParams {
             reverb_step_alg: EnumParam::new("Step Alg",reverb::ReverbType::ExpSwirl),
 
             reverb_low_cut: FloatParam::new(
-                "Reverb Low Cut",
-                400.0,
-                FloatRange::Linear {
-                    min: 20.0,
-                    max: 10000.0,
-                },
-            )
-            .with_smoother(SmoothingStyle::Linear(30.0))
-            .with_string_to_value(formatters::s2v_f32_hz_then_khz())
-            .with_value_to_string(formatters::v2s_f32_hz_then_khz(2))
-            .with_unit(" Low Cut")
-            ,
-
-            reverb_high_cut: FloatParam::new(
-                "Reverb High Cut",
-                1.0,
+                "Reverb High Pass",
+                0.11,
                 FloatRange::Linear {
                     min: 0.0,
                     max: 1.0,
                 },
             )
             .with_smoother(SmoothingStyle::Linear(30.0))
-            .with_string_to_value(formatters::s2v_f32_hz_then_khz())
-            .with_value_to_string(formatters::v2s_f32_hz_then_khz(2))
-            .with_unit(" High Cut")
+            .with_unit(" High Pass")
+            ,
+
+            reverb_high_cut: FloatParam::new(
+                "Reverb Low Pass",
+                1.15,
+                FloatRange::Linear {
+                    min: 0.0,
+                    max: 1.8,
+                },
+            )
+            .with_smoother(SmoothingStyle::Linear(30.0))
+            .with_unit(" Low Pass")
             ,
 
             // Output gain parameter
@@ -206,7 +200,7 @@ impl Default for GainParams {
             // Dry/Wet parameter
             dry_wet: FloatParam::new(
                 "Dry/Wet",
-                1.0,
+                0.5,
                 FloatRange::Linear {
                     min: 0.0,
                     max: 1.0,
@@ -470,9 +464,9 @@ impl Plugin for Gain {
                     counter += 1;
                 }
                 // Update our filter(s)
-                //self.low_filter.calc_butterworth_coeffs();
-                self.high_filter_l.update_cutoff(reverb_high_cut);
-                self.high_filter_r.update_cutoff(reverb_high_cut);
+                // we can pass none to ignore filter type updates
+                self.filter_lowpass.update_params(reverb_high_cut, true);
+                self.filter_highpass.update_params(reverb_low_cut, false);
             }
 
             // Set initial
@@ -487,13 +481,14 @@ impl Plugin for Gain {
                 processed_sample_r += right.process(processed_sample_r);
             }
 
-            // Low cut
-            //processed_sample_l = self.low_filter.apply_filter(processed_sample_l);
-            //processed_sample_r = self.low_filter.apply_filter(processed_sample_r);
+            let lowpassed_l;
+            let lowpassed_r;
 
-            // High cut
-            processed_sample_l = self.high_filter_l.apply_filter(processed_sample_l);
-            processed_sample_r = self.high_filter_r.apply_filter(processed_sample_r);
+            // Lowpass
+            (lowpassed_l, lowpassed_r) = self.filter_lowpass.filter(processed_sample_l, processed_sample_r);
+
+            // Highpass
+            (processed_sample_l, processed_sample_r) = self.filter_highpass.filter(lowpassed_l, lowpassed_r);
 
             // Reverb width control
             let widthInv = 1.0 - reverb_width;
