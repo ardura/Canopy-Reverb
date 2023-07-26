@@ -26,7 +26,7 @@ impl StereoFilter {
 	/// Update Cutoff frequency and filtertype
 	pub(crate) fn update_params(&mut self, cutoff_frequency: f32, lowpass: bool) {
 		self.lowpass = lowpass;
-		self.cutoff_frequency = cutoff_frequency;
+		self.cutoff_frequency = if self.lowpass { cutoff_frequency } else { 1.0 - cutoff_frequency };
 	}
 
 	/// Perform filtering on left and right audio using the struct
@@ -44,14 +44,14 @@ impl StereoFilter {
         	self.r_old2 = r_filtered;
 		}
 		else {
-			l_filtered = (self.l_old * (1.0 - self.cutoff_frequency)) + (left * self.cutoff_frequency);
-			r_filtered = (self.r_old * (1.0 - self.cutoff_frequency)) + (right * self.cutoff_frequency);
-			self.l_old = l_filtered;
-        	self.r_old = r_filtered;
-			l_filtered = (self.l_old2 * (1.0 - self.cutoff_frequency)) + (l_filtered * self.cutoff_frequency);
-			r_filtered = (self.r_old2 * (1.0 - self.cutoff_frequency)) + (r_filtered * self.cutoff_frequency);
-			self.l_old2 = l_filtered;
-        	self.r_old2 = r_filtered;
+			l_filtered = (self.l_old * (1.0 - (1.0 - self.cutoff_frequency))) + (left * (1.0 - self.cutoff_frequency));
+            r_filtered = (self.r_old * (1.0 - (1.0 - self.cutoff_frequency))) + (right * (1.0 - self.cutoff_frequency));
+            self.l_old = l_filtered;
+            self.r_old = r_filtered;
+            l_filtered = (self.l_old2 * (1.0 - (1.0 - self.cutoff_frequency))) + (l_filtered * (1.0 - self.cutoff_frequency));
+            r_filtered = (self.r_old2 * (1.0 - (1.0 - self.cutoff_frequency))) + (r_filtered * (1.0 - self.cutoff_frequency));
+            self.l_old2 = l_filtered;
+            self.r_old2 = r_filtered;
 		}
 
 		if self.lowpass {

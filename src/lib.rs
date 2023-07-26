@@ -5,7 +5,10 @@ mod filters;
 use nih_plug::{prelude::*};
 use nih_plug_egui::{create_egui_editor, egui::{self, Color32, Rect, Rounding, RichText, FontId, Pos2}, EguiState, widgets::ParamSlider};
 use reverb::{Reverb, ReverbType};
+use ui_knob::lerp;
+use std::f32;
 use std::{sync::{Arc}, ops::RangeInclusive};
+use rand::prelude::*;
 
 /***************************************************************************
  * Canopy Reverb by Ardura
@@ -21,8 +24,8 @@ const A_KNOB_OUTSIDE_COLOR2: Color32 = Color32::from_rgb(0, 74, 76);
 
 
 // Plugin sizing
-const WIDTH: u32 = 820;
-const HEIGHT: u32 = 160;
+const WIDTH: u32 = 976;
+const HEIGHT: u32 = 156;
 
 pub struct Gain {
     params: Arc<GainParams>,
@@ -40,6 +43,7 @@ pub struct Gain {
     prev_high_cut: f32,
     filter_lowpass: filters::StereoFilter,
     filter_highpass: filters::StereoFilter,
+    prev_rand_offset: f32
 }
 
 #[derive(Params)]
@@ -66,6 +70,12 @@ struct GainParams {
 
     #[id = "reverb_width"]
     pub reverb_width: FloatParam,
+
+    #[id = "width_random"]
+    pub width_random: FloatParam,
+
+    #[id = "width_offset"]
+    pub width_offset: FloatParam,
 
     #[id = "reverb_low_cut"]
     pub reverb_low_cut: FloatParam,
@@ -96,6 +106,7 @@ impl Default for Gain {
             prev_processed_out_r: 0.0,
             prev_low_cut: 0.0,
             prev_high_cut: 0.0,
+            prev_rand_offset: 0.0,
             filter_lowpass: filters::StereoFilter::new(1.0, true),
             filter_highpass: filters::StereoFilter::new(0.5, false),
         }
@@ -139,11 +150,29 @@ impl Default for GainParams {
             reverb_width: FloatParam::new(
                 "Reverb Width",
                 0.83,
-                FloatRange::Linear { min: 0.0, max: 1.0 },
+                FloatRange::Linear { min: 0.0, max: 10.0 },
             )
             .with_smoother(SmoothingStyle::Linear(30.0))
             .with_value_to_string(formatters::v2s_f32_rounded(2))
             .with_unit(" Width"),
+
+            width_offset: FloatParam::new(
+                "Reverb Offset",
+                0.0,
+                FloatRange::Linear { min: -1.0, max: 1.0 },
+            )
+            .with_smoother(SmoothingStyle::Linear(30.0))
+            .with_value_to_string(formatters::v2s_f32_rounded(2))
+            .with_unit(" Offset"),
+
+            width_random: FloatParam::new(
+                "Reverb Rand",
+                0.0,
+                FloatRange::Linear { min: 0.0, max: 10.0 },
+            )
+            .with_smoother(SmoothingStyle::Linear(30.0))
+            .with_value_to_string(formatters::v2s_f32_rounded(3))
+            .with_unit(" Rand"),
 
             reverb_steps: IntParam::new(
                 "Reverb Steps",
@@ -160,7 +189,7 @@ impl Default for GainParams {
 
             reverb_low_cut: FloatParam::new(
                 "Reverb High Pass",
-                0.11,
+                0.0,
                 FloatRange::Linear {
                     min: 0.0,
                     max: 1.0,
@@ -267,9 +296,6 @@ impl Plugin for Gain {
                         style_var.visuals.selection.stroke.color = A_KNOB_INSIDE_COLOR;
                         // Unfilled background of the bar
                         style_var.visuals.widgets.noninteractive.bg_fill = A_BACKGROUND_COLOR;
-                        //style_var.visuals.widgets.noninteractive.bg_stroke.color = A_KNOB_OUTSIDE_COLOR;
-                        //style_var.visuals.widgets.noninteractive.fg_stroke.color = A_KNOB_OUTSIDE_COLOR;
-                        
 
                         // Trying to draw background as rect
                         ui.painter().rect_filled(
@@ -295,7 +321,7 @@ impl Plugin for Gain {
                             });
 
                             ui.horizontal(|ui| {
-                                let knob_size = 36.0;
+                                let knob_size = 34.0;
 
                                 let mut delay_knob = ui_knob::ArcKnob::for_param(&params.reverb_delay, setter, knob_size + 8.0);
                                 delay_knob.preset_style(ui_knob::KnobStyle::LargeMedium);
@@ -333,6 +359,18 @@ impl Plugin for Gain {
                                 width_knob.set_line_color(A_KNOB_OUTSIDE_COLOR);
                                 ui.add(width_knob);
 
+                                let mut width_offset = ui_knob::ArcKnob::for_param(&params.width_offset, setter, knob_size);
+                                width_offset.preset_style(ui_knob::KnobStyle::LargeMedium);
+                                width_offset.set_fill_color(A_KNOB_INSIDE_COLOR);
+                                width_offset.set_line_color(A_KNOB_OUTSIDE_COLOR);
+                                ui.add(width_offset);
+
+                                let mut width_random = ui_knob::ArcKnob::for_param(&params.width_random, setter, knob_size);
+                                width_random.preset_style(ui_knob::KnobStyle::LargeMedium);
+                                width_random.set_fill_color(A_KNOB_INSIDE_COLOR);
+                                width_random.set_line_color(A_KNOB_OUTSIDE_COLOR);
+                                ui.add(width_random);                                
+
                                 let mut dry_wet_knob = ui_knob::ArcKnob::for_param(&params.dry_wet, setter, knob_size);
                                 dry_wet_knob.preset_style(ui_knob::KnobStyle::SmallTogether);
                                 dry_wet_knob.set_fill_color(A_KNOB_OUTSIDE_COLOR2);
@@ -349,17 +387,15 @@ impl Plugin for Gain {
                             let spacer_size = 16.0;
                             ui.horizontal(|ui| {
                                 ui.add_space(spacer_size);
-                                ui.add(ParamSlider::for_param(&params.reverb_low_cut, setter).with_width((WIDTH as f32 - 180.0)*0.4));
+                                ui.add(ParamSlider::for_param(&params.reverb_low_cut, setter).with_width((WIDTH as f32 - 32.0)*0.38));
                                 ui.add_space(spacer_size);
-                                ui.add(ParamSlider::for_param(&params.reverb_high_cut, setter).with_width((WIDTH as f32 - 180.0)*0.4));
+                                ui.add(ParamSlider::for_param(&params.reverb_high_cut, setter).with_width((WIDTH as f32 - 32.0)*0.38));
                             });
                         });
                     });
                 }
             )
     }
-
-    
 
     fn initialize(
         &mut self,
@@ -384,6 +420,8 @@ impl Plugin for Gain {
             let reverb_delay: i32 = self.params.reverb_delay.smoothed.next();
             let reverb_decay: f32 = self.params.reverb_decay.smoothed.next();
             let reverb_width: f32 = self.params.reverb_width.smoothed.next();
+            let width_offset: f32 = self.params.width_offset.smoothed.next();
+            let width_random: f32 = self.params.width_random.smoothed.next();
             let reverb_steps: i32 = self.params.reverb_steps.smoothed.next();
             let reverb_low_cut: f32 = self.params.reverb_low_cut.smoothed.next();
             let reverb_high_cut: f32 = self.params.reverb_high_cut.smoothed.next();
@@ -435,6 +473,7 @@ impl Plugin for Gain {
                 }
                 update_bool = true;
             }
+            // If any other knobs have changed and we need to update our struct
             if reverb_steps != self.prev_reverb_steps || 
                reverb_step_alg != self.prev_reverb_alg || 
                reverb_delay != self.prev_reverb_delay  || 
@@ -464,7 +503,6 @@ impl Plugin for Gain {
                     counter += 1;
                 }
                 // Update our filter(s)
-                // we can pass none to ignore filter type updates
                 self.filter_lowpass.update_params(reverb_high_cut, true);
                 self.filter_highpass.update_params(reverb_low_cut, false);
             }
@@ -473,28 +511,41 @@ impl Plugin for Gain {
             processed_sample_l = in_l;
             processed_sample_r = in_r;
 
+            let mut rng = thread_rng();
             // Process our stacks
             for (left, right) in 
                 self.reverb_l_array.iter_mut().zip(
                 self.reverb_r_array.iter_mut()) {
-                processed_sample_l += left.process(processed_sample_l);
-                processed_sample_r += right.process(processed_sample_r);
+                // Random Reverb width functionality
+                let calc_width_offset: f32 = if width_random > 0.0 {
+                    let weighted_rand = rng.gen_range(-width_random..width_random);
+                    self.prev_rand_offset = lerp(self.prev_rand_offset, weighted_rand, 0.000053);
+                    self.prev_rand_offset
+                } else {
+                    0.0
+                };
+
+                
+                let widthInv = 1.0 - calc_width_offset;
+                let mid = (processed_sample_l + processed_sample_r)*0.5;
+                processed_sample_l += left.process(widthInv * mid + (calc_width_offset) * processed_sample_l);
+                processed_sample_r += right.process(widthInv * mid + (-calc_width_offset) * processed_sample_r);
             }
 
-            let lowpassed_l;
-            let lowpassed_r;
-
-            // Lowpass
-            (lowpassed_l, lowpassed_r) = self.filter_lowpass.filter(processed_sample_l, processed_sample_r);
+            let highpassed_l;
+            let highpassed_r;
 
             // Highpass
-            (processed_sample_l, processed_sample_r) = self.filter_highpass.filter(lowpassed_l, lowpassed_r);
+            (highpassed_l, highpassed_r) = self.filter_highpass.filter(processed_sample_l, processed_sample_r);
 
-            // Reverb width control
+            // Lowpass
+            (processed_sample_l, processed_sample_r) = self.filter_lowpass.filter(highpassed_l, highpassed_r);
+
+            // Reverb width and offset control
             let widthInv = 1.0 - reverb_width;
             let mid = (processed_sample_l + processed_sample_r)*0.5;
-            processed_sample_l  = widthInv * mid + reverb_width * processed_sample_l;
-            processed_sample_r = widthInv * mid + reverb_width * processed_sample_r;
+            processed_sample_l = widthInv * mid + (reverb_width + width_offset) * processed_sample_l;
+            processed_sample_r = widthInv * mid + (reverb_width - width_offset) * processed_sample_r;
 
             // Remove DC Offset with single pole HP
             // Calculated below by Ardura in advance!
@@ -524,8 +575,9 @@ impl Plugin for Gain {
 
             // Calculate dry/wet mix
             let wet_gain: f32 = dry_wet;
-            processed_sample_l = in_l + processed_sample_l * wet_gain;
-            processed_sample_r = in_r + processed_sample_r * wet_gain;
+            let dry_gain: f32 = 1.0 - wet_gain;
+            processed_sample_l = in_l * dry_gain + processed_sample_l * wet_gain;
+            processed_sample_r = in_r * dry_gain + processed_sample_r * wet_gain;
             
             // Output gain
             processed_sample_l *= output_gain;

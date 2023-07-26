@@ -113,7 +113,7 @@ impl Reverb {
                     output_vector.push(value);
                 },
                 // Chaos Steps
-                // Not really sure how to descrive but it sounds cool
+                // Not really sure how to describe but it sounds cool
                 ReverbType::ChaosSteps => {
                     let mut x = input_number;
                     let mut y = number_of_integers;
