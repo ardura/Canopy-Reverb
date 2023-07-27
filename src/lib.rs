@@ -7,7 +7,7 @@ use nih_plug_egui::{create_egui_editor, egui::{self, Color32, Rect, Rounding, Ri
 use reverb::{Reverb, ReverbType};
 use ui_knob::lerp;
 use std::f32;
-use std::{sync::{Arc}, ops::RangeInclusive};
+use std::{sync::{Arc}, ops::RangeInclusive, collections::VecDeque};
 use rand::prelude::*;
 
 /***************************************************************************
@@ -43,7 +43,8 @@ pub struct Gain {
     prev_high_cut: f32,
     filter_lowpass: filters::StereoFilter,
     filter_highpass: filters::StereoFilter,
-    prev_rand_offset: f32
+    prev_rand_offset: f32,
+    prev_width_offset: i32,
 }
 
 #[derive(Params)]
@@ -75,7 +76,7 @@ struct GainParams {
     pub width_random: FloatParam,
 
     #[id = "width_offset"]
-    pub width_offset: FloatParam,
+    pub width_offset: IntParam,
 
     #[id = "reverb_low_cut"]
     pub reverb_low_cut: FloatParam,
@@ -94,8 +95,8 @@ impl Default for Gain {
     fn default() -> Self {
         Self {
             params: Arc::new(GainParams::default()),
-            reverb_l_array: (0..1).map(|_| reverb::Reverb::new(vec![0,0],0.6,400).clone()).collect(),
-            reverb_r_array: (0..1).map(|_| reverb::Reverb::new(vec![0,0],0.6,400).clone()).collect(),
+            reverb_l_array: (0..1).map(|_| reverb::Reverb::new(VecDeque::from(vec![0; 400]),0.6,400).clone()).collect(),
+            reverb_r_array: (0..1).map(|_| reverb::Reverb::new(VecDeque::from(vec![0; 400]),0.6,400).clone()).collect(),
             prev_reverb_steps: 0,
             prev_reverb_alg: ReverbType::ExpSwirl,
             prev_reverb_delay: 0,
@@ -107,6 +108,7 @@ impl Default for Gain {
             prev_low_cut: 0.0,
             prev_high_cut: 0.0,
             prev_rand_offset: 0.0,
+            prev_width_offset: 0,
             filter_lowpass: filters::StereoFilter::new(1.0, true),
             filter_highpass: filters::StereoFilter::new(0.5, false),
         }
@@ -156,13 +158,14 @@ impl Default for GainParams {
             .with_value_to_string(formatters::v2s_f32_rounded(2))
             .with_unit(" Width"),
 
-            width_offset: FloatParam::new(
+            // 435 is a quarter note at 138 bpm :)
+            // 428 is a quarter note at 140
+            width_offset: IntParam::new(
                 "Reverb Offset",
-                0.0,
-                FloatRange::Linear { min: -1.0, max: 1.0 },
+                0,
+                IntRange::Linear { min: -435, max: 435 },
             )
             .with_smoother(SmoothingStyle::Linear(30.0))
-            .with_value_to_string(formatters::v2s_f32_rounded(2))
             .with_unit(" Offset"),
 
             width_random: FloatParam::new(
@@ -419,8 +422,7 @@ impl Plugin for Gain {
             let reverb_stack: i32 = self.params.reverb_stack.smoothed.next();
             let reverb_delay: i32 = self.params.reverb_delay.smoothed.next();
             let reverb_decay: f32 = self.params.reverb_decay.smoothed.next();
-            let reverb_width: f32 = self.params.reverb_width.smoothed.next();
-            let width_offset: f32 = self.params.width_offset.smoothed.next();
+            let width_offset: i32 = self.params.width_offset.smoothed.next();
             let width_random: f32 = self.params.width_random.smoothed.next();
             let reverb_steps: i32 = self.params.reverb_steps.smoothed.next();
             let reverb_low_cut: f32 = self.params.reverb_low_cut.smoothed.next();
@@ -430,8 +432,17 @@ impl Plugin for Gain {
             let dry_wet: f32 = self.params.dry_wet.value();
 
             // Split left and right same way original subhoofer did
-            let in_l = *channel_samples.get_mut(0).unwrap();
-            let in_r = *channel_samples.get_mut(1).unwrap();
+            let in_l: f32 = *channel_samples.get_mut(0).unwrap();
+            let in_r: f32 = *channel_samples.get_mut(1).unwrap();
+
+            let reverb_width: f32;
+            // Make extra width if our input signal is mono
+            if in_l == in_r {
+                reverb_width = self.params.reverb_width.smoothed.next() * 3.0;
+            }
+            else {
+                reverb_width = self.params.reverb_width.smoothed.next();
+            }
             
             ///////////////////////////////////////////////////////////////////////
             
@@ -479,7 +490,8 @@ impl Plugin for Gain {
                reverb_delay != self.prev_reverb_delay  || 
                reverb_decay != self.prev_reverb_decay ||
                reverb_low_cut != self.prev_low_cut ||
-               reverb_high_cut != self.prev_high_cut
+               reverb_high_cut != self.prev_high_cut ||
+               width_offset != self.prev_width_offset
             {
                 update_bool = true;
                 self.prev_reverb_alg = reverb_step_alg;
@@ -488,6 +500,7 @@ impl Plugin for Gain {
                 self.prev_reverb_decay = reverb_decay;
                 self.prev_low_cut = reverb_low_cut;
                 self.prev_high_cut = reverb_high_cut;
+                self.prev_width_offset = width_offset;
             }
 
             if update_bool == true
@@ -500,12 +513,26 @@ impl Plugin for Gain {
                     // Integer division to scale delay with amount of stack
                     left.update(Reverb::generate_steps(reverb_delay/counter, reverb_steps, reverb_step_alg), reverb_decay);
                     right.update(Reverb::generate_steps(reverb_delay/counter, reverb_steps, reverb_step_alg), reverb_decay);
+
+                    // Haas offset is here since the reverb buffers need to change
+                    if width_offset != 0 {
+                        if width_offset > 0 {
+                            left.shift_buffer(width_offset);
+                        }
+                        else {
+                            right.shift_buffer(-width_offset);
+                        }
+                    }
+
                     counter += 1;
                 }
+
                 // Update our filter(s)
                 self.filter_lowpass.update_params(reverb_high_cut, true);
                 self.filter_highpass.update_params(reverb_low_cut, false);
             }
+
+            
 
             // Set initial
             processed_sample_l = in_l;
@@ -525,8 +552,8 @@ impl Plugin for Gain {
                     0.0
                 };
 
-                
-                let widthInv = 1.0 - calc_width_offset;
+                //let widthInv = 1.0 - calc_width_offset;
+                let widthInv = 1.0 - calc_width_offset*0.1;
                 let mid = (processed_sample_l + processed_sample_r)*0.5;
                 processed_sample_l += left.process(widthInv * mid + (calc_width_offset) * processed_sample_l);
                 processed_sample_r += right.process(widthInv * mid + (-calc_width_offset) * processed_sample_r);
@@ -541,11 +568,11 @@ impl Plugin for Gain {
             // Lowpass
             (processed_sample_l, processed_sample_r) = self.filter_lowpass.filter(highpassed_l, highpassed_r);
 
-            // Reverb width and offset control
+            // Reverb width
             let widthInv = 1.0 - reverb_width;
             let mid = (processed_sample_l + processed_sample_r)*0.5;
-            processed_sample_l = widthInv * mid + (reverb_width + width_offset) * processed_sample_l;
-            processed_sample_r = widthInv * mid + (reverb_width - width_offset) * processed_sample_r;
+            processed_sample_l = widthInv * mid + reverb_width * processed_sample_l;
+            processed_sample_r = widthInv * mid + reverb_width * processed_sample_r;
 
             // Remove DC Offset with single pole HP
             // Calculated below by Ardura in advance!
