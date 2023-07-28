@@ -1,6 +1,6 @@
 use std::{sync::Arc, collections::VecDeque};
 use nih_plug_egui::egui::mutex::Mutex;
-use nih_plug::{prelude::Enum, nih_log, nih_dbg};
+use nih_plug::{prelude::Enum};
 
 #[derive(Enum, PartialEq, Eq, Debug, Copy, Clone)]
 pub enum ReverbType{
