@@ -1,6 +1,6 @@
 use std::{sync::Arc, collections::VecDeque};
 use nih_plug_egui::egui::mutex::Mutex;
-use nih_plug::{prelude::Enum};
+use nih_plug::{prelude::Enum, nih_log, nih_dbg};
 
 #[derive(Enum, PartialEq, Eq, Debug, Copy, Clone)]
 pub enum ReverbType{
@@ -151,7 +151,13 @@ impl Reverb {
         let mut delayed_sample = 0.0;
 
         for delay_time in delay_times_lock.iter() {
-            let read_index = (self.read_offset + write_index + *delay_time as usize) % buffer_len;
+            let read_index: usize;
+            // Was getting panic dividing by zero here
+            if buffer_len == 0 {
+                return input;
+            }
+            read_index = (self.read_offset + write_index + *delay_time as usize) % buffer_len;
+            
             delayed_sample = buffer_lock[read_index] * self.decay;
             if delayed_sample < 1e-6 as f32 {
                 delayed_sample = 0.0;
