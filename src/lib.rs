@@ -84,6 +84,9 @@ struct GainParams {
     #[id = "reverb_high_cut"]
     pub reverb_high_cut: FloatParam,
 
+    #[id = "reverb_lock"]
+    pub reverb_lock: IntParam,
+
     #[id = "output_gain"]
     pub output_gain: FloatParam,
 
@@ -127,6 +130,13 @@ impl Default for GainParams {
             )
             .with_smoother(SmoothingStyle::Linear(30.0))
             .with_unit(" Stack"),
+
+            reverb_lock: IntParam::new(
+                "Lock",
+                0,
+                IntRange::Linear { min: 0, max: 1 },
+            )
+            .with_unit(" Lock"),
 
             reverb_delay: IntParam::new(
                 "Reverb Delay",
@@ -390,9 +400,10 @@ impl Plugin for Gain {
                             let spacer_size = 16.0;
                             ui.horizontal(|ui| {
                                 ui.add_space(spacer_size);
-                                ui.add(ParamSlider::for_param(&params.reverb_low_cut, setter).with_width((WIDTH as f32 - 32.0)*0.38));
+                                ui.add(ParamSlider::for_param(&params.reverb_low_cut, setter).with_width((WIDTH as f32 - 32.0)*0.35));
                                 ui.add_space(spacer_size);
-                                ui.add(ParamSlider::for_param(&params.reverb_high_cut, setter).with_width((WIDTH as f32 - 32.0)*0.38));
+                                ui.add(ParamSlider::for_param(&params.reverb_high_cut, setter).with_width((WIDTH as f32 - 32.0)*0.35));
+                                ui.add(ParamSlider::for_param(&params.reverb_lock, setter).with_width(16.0));
                             });
                         });
                     });
@@ -420,6 +431,7 @@ impl Plugin for Gain {
             let mut processed_sample_r: f32;
 
             let reverb_stack: i32 = self.params.reverb_stack.smoothed.next();
+            let reverb_lock: i32 = self.params.reverb_lock.value();
             let reverb_delay: i32 = self.params.reverb_delay.smoothed.next();
             let reverb_decay: f32 = self.params.reverb_decay.smoothed.next();
             let width_offset: i32 = self.params.width_offset.smoothed.next();
@@ -555,8 +567,16 @@ impl Plugin for Gain {
                 //let widthInv = 1.0 - calc_width_offset;
                 let widthInv = 1.0 - calc_width_offset*0.1;
                 let mid = (processed_sample_l + processed_sample_r)*0.5;
-                processed_sample_l += left.process(widthInv * mid + (calc_width_offset) * processed_sample_l);
-                processed_sample_r += right.process(widthInv * mid + (-calc_width_offset) * processed_sample_r);
+                // Process an unwritable buffer for 'freeze' functionality.
+                if reverb_lock == 1 {
+                    processed_sample_l += left.locked_buffer_process(widthInv * mid + (calc_width_offset) * processed_sample_l);
+                    processed_sample_r += right.locked_buffer_process(widthInv * mid + (-calc_width_offset) * processed_sample_r);
+                }
+                else {
+                    // Process buffer and write to buffer
+                    processed_sample_l += left.process(widthInv * mid + (calc_width_offset) * processed_sample_l);
+                    processed_sample_r += right.process(widthInv * mid + (-calc_width_offset) * processed_sample_r);
+                }
             }
 
             let highpassed_l;

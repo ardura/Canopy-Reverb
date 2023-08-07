@@ -142,6 +142,7 @@ impl Reverb {
         output_vector
     }
 
+    // Process a writable buffer
     pub(crate) fn process(&mut self, input: f32) -> f32 {
         let delay_times_lock = self.delay_times.lock();
         let mut buffer_lock = self.buffer.lock();
@@ -170,6 +171,43 @@ impl Reverb {
         }
 
         buffer_lock[write_index] = output;
+        *self.write_index.lock() = write_index + 1;
+
+        drop(buffer_lock);
+        drop(delay_times_lock);
+
+        //output
+        delayed_sample
+    }
+
+    // Process without writing
+    pub(crate) fn locked_buffer_process(&mut self, input: f32) -> f32 {
+        let delay_times_lock = self.delay_times.lock();
+        let buffer_lock = self.buffer.lock();
+        let buffer_len = buffer_lock.len();
+        let mut write_index = *self.write_index.lock();
+        let mut delayed_sample = 0.0;
+
+        for delay_time in delay_times_lock.iter() {
+            let read_index: usize;
+            // Was getting panic dividing by zero here
+            if buffer_len == 0 {
+                return input;
+            }
+            read_index = (self.read_offset + write_index + *delay_time as usize) % buffer_len;
+            
+            delayed_sample = buffer_lock[read_index] * self.decay;
+            if delayed_sample < 1e-6 as f32 {
+                delayed_sample = 0.0;
+            }
+        }
+
+        if write_index >= buffer_len {
+            write_index = 0;
+        }
+
+        // Skip this write of output to our buffer
+        //buffer_lock[write_index] = output;
         *self.write_index.lock() = write_index + 1;
 
         drop(buffer_lock);
