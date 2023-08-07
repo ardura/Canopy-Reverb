@@ -209,6 +209,7 @@ impl Default for GainParams {
                 },
             )
             .with_smoother(SmoothingStyle::Linear(30.0))
+            .with_value_to_string(formatters::v2s_f32_rounded(4))
             .with_unit(" High Pass")
             ,
 
@@ -221,6 +222,7 @@ impl Default for GainParams {
                 },
             )
             .with_smoother(SmoothingStyle::Linear(30.0))
+            .with_value_to_string(formatters::v2s_f32_rounded(4))
             .with_unit(" Low Pass")
             ,
 
@@ -397,12 +399,12 @@ impl Plugin for Gain {
                                 ui.add(output_knob);
                             });
 
-                            let spacer_size = 16.0;
+                            let spacer_size = 10.0;
                             ui.horizontal(|ui| {
                                 ui.add_space(spacer_size);
-                                ui.add(ParamSlider::for_param(&params.reverb_low_cut, setter).with_width((WIDTH as f32 - 32.0)*0.35));
+                                ui.add(ParamSlider::for_param(&params.reverb_low_cut, setter).with_width((WIDTH as f32 - 32.0)*0.33));
                                 ui.add_space(spacer_size);
-                                ui.add(ParamSlider::for_param(&params.reverb_high_cut, setter).with_width((WIDTH as f32 - 32.0)*0.35));
+                                ui.add(ParamSlider::for_param(&params.reverb_high_cut, setter).with_width((WIDTH as f32 - 32.0)*0.33));
                                 ui.add(ParamSlider::for_param(&params.reverb_lock, setter).with_width(16.0));
                             });
                         });
