@@ -87,6 +87,9 @@ struct GainParams {
     #[id = "reverb_lock"]
     pub reverb_lock: IntParam,
 
+    #[id = "reverb_sidechain"]
+    pub reverb_sidechain: FloatParam,
+
     #[id = "output_gain"]
     pub output_gain: FloatParam,
 
@@ -205,12 +208,13 @@ impl Default for GainParams {
                 0.0,
                 FloatRange::Linear {
                     min: 0.0,
-                    max: 1.0,
+                    max: 0.9,
                 },
             )
             .with_smoother(SmoothingStyle::Linear(30.0))
-            .with_value_to_string(formatters::v2s_f32_rounded(4))
-            .with_unit(" High Pass")
+            //.with_value_to_string(formatters::v2s_f32_rounded(4))
+            .with_value_to_string(format_hp_filter(2))
+            .with_unit("Hz High Pass")
             ,
 
             reverb_high_cut: FloatParam::new(
@@ -222,8 +226,22 @@ impl Default for GainParams {
                 },
             )
             .with_smoother(SmoothingStyle::Linear(30.0))
-            .with_value_to_string(formatters::v2s_f32_rounded(4))
-            .with_unit(" Low Pass")
+            //.with_value_to_string(formatters::v2s_f32_rounded(4))
+            .with_value_to_string(format_lp_filter(2))
+            .with_unit("Khz Low Pass")
+            ,
+
+            reverb_sidechain: FloatParam::new(
+                "Self Sidechain",
+                0.0,
+                FloatRange::Linear {
+                    min: 0.0,
+                    max: 1.0,
+                },
+            )
+            .with_smoother(SmoothingStyle::Linear(10.0))
+            .with_value_to_string(formatters::v2s_f32_rounded(1))
+            .with_unit(" Self Sidechain")
             ,
 
             // Output gain parameter
@@ -231,13 +249,13 @@ impl Default for GainParams {
                 "Output Gain",
                 util::db_to_gain(0.0),
                 FloatRange::Skewed {
-                    min: util::db_to_gain(-12.0),
-                    max: util::db_to_gain(12.0),
-                    factor: FloatRange::gain_skew_factor(-12.0, 12.0),
+                    min: util::db_to_gain(-48.0),
+                    max: util::db_to_gain(0.0),
+                    factor: FloatRange::gain_skew_factor(-48.0, 0.0),
                 },
             )
             .with_smoother(SmoothingStyle::Logarithmic(50.0))
-            .with_unit(" dB Out Gain")
+            .with_unit(" dB Out")
             .with_value_to_string(formatters::v2s_f32_gain_to_db(2))
             .with_string_to_value(formatters::s2v_f32_gain_to_db()),
 
@@ -399,13 +417,16 @@ impl Plugin for Gain {
                                 ui.add(output_knob);
                             });
 
-                            let spacer_size = 10.0;
+                            let spacer_size = 8.0;
                             ui.horizontal(|ui| {
                                 ui.add_space(spacer_size);
-                                ui.add(ParamSlider::for_param(&params.reverb_low_cut, setter).with_width((WIDTH as f32 - 32.0)*0.33));
+                                ui.add(ParamSlider::for_param(&params.reverb_low_cut, setter).with_width(200.0));
                                 ui.add_space(spacer_size);
-                                ui.add(ParamSlider::for_param(&params.reverb_high_cut, setter).with_width((WIDTH as f32 - 32.0)*0.33));
+                                ui.add(ParamSlider::for_param(&params.reverb_high_cut, setter).with_width(200.0));
+                                ui.add_space(spacer_size);
                                 ui.add(ParamSlider::for_param(&params.reverb_lock, setter).with_width(16.0));
+                                ui.add_space(spacer_size);
+                                ui.add(ParamSlider::for_param(&params.reverb_sidechain, setter).with_width(40.0));
                             });
                         });
                     });
@@ -442,6 +463,7 @@ impl Plugin for Gain {
             let reverb_low_cut: f32 = self.params.reverb_low_cut.smoothed.next();
             let reverb_high_cut: f32 = self.params.reverb_high_cut.smoothed.next();
             let reverb_step_alg: reverb::ReverbType = self.params.reverb_step_alg.value();
+            let reverb_sidechain: f32 = self.params.reverb_sidechain.smoothed.next();
             let output_gain: f32 = self.params.output_gain.smoothed.next();
             let dry_wet: f32 = self.params.dry_wet.value();
 
@@ -571,13 +593,13 @@ impl Plugin for Gain {
                 let mid = (processed_sample_l + processed_sample_r)*0.5;
                 // Process an unwritable buffer for 'freeze' functionality.
                 if reverb_lock == 1 {
-                    processed_sample_l += left.locked_buffer_process(widthInv * mid + (calc_width_offset) * processed_sample_l);
-                    processed_sample_r += right.locked_buffer_process(widthInv * mid + (-calc_width_offset) * processed_sample_r);
+                    processed_sample_l += sidechain(in_l,left.locked_buffer_process(widthInv * mid + (calc_width_offset) * processed_sample_l),reverb_sidechain);
+                    processed_sample_r += sidechain(in_r,right.locked_buffer_process(widthInv * mid + (-calc_width_offset) * processed_sample_r),reverb_sidechain);
                 }
                 else {
                     // Process buffer and write to buffer
-                    processed_sample_l += left.process(widthInv * mid + (calc_width_offset) * processed_sample_l);
-                    processed_sample_r += right.process(widthInv * mid + (-calc_width_offset) * processed_sample_r);
+                    processed_sample_l += sidechain(in_l, left.process(widthInv * mid + (calc_width_offset) * processed_sample_l), reverb_sidechain);
+                    processed_sample_r += sidechain(in_r, right.process(widthInv * mid + (-calc_width_offset) * processed_sample_r), reverb_sidechain);
                 }
             }
 
@@ -679,3 +701,23 @@ impl Vst3Plugin for Gain {
 
 nih_export_clap!(Gain);
 nih_export_vst3!(Gain);
+
+pub fn format_lp_filter(digits: usize) -> Arc<dyn Fn(f32) -> String + Send + Sync> {
+    Arc::new(move |value| {
+        format!("{:.digits$}", (value * 15.0) + 1.0)
+    })
+}
+
+pub fn format_hp_filter(digits: usize) -> Arc<dyn Fn(f32) -> String + Send + Sync> {
+    Arc::new(move |value| {
+        format!("{:.digits$}", (value * 1570.0) + 30.0)
+    })
+}
+
+fn sidechain(sig_ref: f32, sig_sidechained: f32, tension: f32) -> f32 {
+    if tension > 0.0 {
+        (sig_sidechained.abs() - sig_ref.abs()*tension)*sig_sidechained.signum()
+    } else {
+        sig_sidechained
+    }
+}
