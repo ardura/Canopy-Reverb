@@ -2,8 +2,12 @@
 mod ui_knob;
 mod reverb;
 mod filters;
+mod ducking;
+use ducking::Ducking;
 use nih_plug::{prelude::*};
 use nih_plug_egui::{create_egui_editor, egui::{self, Color32, Rect, Rounding, RichText, FontId, Pos2}, EguiState, widgets::ParamSlider};
+mod CustomParamSlider;
+use CustomParamSlider::ParamSlider as OtherParamSlider;
 use reverb::{Reverb, ReverbType};
 use ui_knob::lerp;
 use std::f32;
@@ -24,8 +28,8 @@ const A_KNOB_OUTSIDE_COLOR2: Color32 = Color32::from_rgb(0, 74, 76);
 
 
 // Plugin sizing
-const WIDTH: u32 = 976;
-const HEIGHT: u32 = 156;
+const WIDTH: u32 = 460;
+const HEIGHT: u32 = 410;
 
 pub struct Gain {
     params: Arc<GainParams>,
@@ -41,10 +45,13 @@ pub struct Gain {
     prev_processed_out_r: f32,
     prev_low_cut: f32,
     prev_high_cut: f32,
+    prev_sc_threshold: f32,
     filter_lowpass: filters::StereoFilter,
     filter_highpass: filters::StereoFilter,
     prev_rand_offset: f32,
     prev_width_offset: i32,
+    ducking_l: Ducking,
+    ducking_r: Ducking,
 }
 
 #[derive(Params)]
@@ -115,8 +122,11 @@ impl Default for Gain {
             prev_high_cut: 0.0,
             prev_rand_offset: 0.0,
             prev_width_offset: 0,
+            prev_sc_threshold: 0.0,
             filter_lowpass: filters::StereoFilter::new(1.0, true),
             filter_highpass: filters::StereoFilter::new(0.5, false),
+            ducking_l: Ducking::new(0.2, 0.1, 0.1,  44100.0),
+            ducking_r: Ducking::new(0.2, 0.1, 0.1, 44100.0),
         }
     }
 }
@@ -139,7 +149,7 @@ impl Default for GainParams {
                 0,
                 IntRange::Linear { min: 0, max: 1 },
             )
-            .with_unit(" Lock"),
+            .with_unit(" Freeze Buffer"),
 
             reverb_delay: IntParam::new(
                 "Reverb Delay",
@@ -208,7 +218,7 @@ impl Default for GainParams {
                 0.0,
                 FloatRange::Linear {
                     min: 0.0,
-                    max: 0.9,
+                    max: 0.6,
                 },
             )
             .with_smoother(SmoothingStyle::Linear(30.0))
@@ -235,13 +245,13 @@ impl Default for GainParams {
                 "Self Sidechain",
                 0.0,
                 FloatRange::Linear {
-                    min: 0.0,
-                    max: 1.0,
+                    min: -36.0,
+                    max: 0.0,
                 },
             )
             .with_smoother(SmoothingStyle::Linear(10.0))
             .with_value_to_string(formatters::v2s_f32_rounded(1))
-            .with_unit(" Self Sidechain")
+            .with_unit("dB Self Sidechain Threshold")
             ,
 
             // Output gain parameter
@@ -352,17 +362,17 @@ impl Plugin for Gain {
                             ui.horizontal(|ui| {
                                 ui.label(RichText::new("    Canopy Reverb").font(FontId::monospace(14.0)).color(A_KNOB_OUTSIDE_COLOR)).on_hover_text("by Ardura!");
                             });
+                            ui.separator();
+                            let knob_size = 42.0;
 
                             ui.horizontal(|ui| {
-                                let knob_size = 34.0;
-
-                                let mut delay_knob = ui_knob::ArcKnob::for_param(&params.reverb_delay, setter, knob_size + 8.0);
+                                let mut delay_knob = ui_knob::ArcKnob::for_param(&params.reverb_delay, setter, knob_size);
                                 delay_knob.preset_style(ui_knob::KnobStyle::LargeMedium);
                                 delay_knob.set_fill_color(A_KNOB_INSIDE_COLOR);
                                 delay_knob.set_line_color(A_KNOB_OUTSIDE_COLOR);
                                 ui.add(delay_knob);
 
-                                let mut stack_knob = ui_knob::ArcKnob::for_param(&params.reverb_stack, setter, knob_size + 8.0);
+                                let mut stack_knob = ui_knob::ArcKnob::for_param(&params.reverb_stack, setter, knob_size);
                                 stack_knob.preset_style(ui_knob::KnobStyle::LargeMedium);
                                 stack_knob.set_fill_color(A_KNOB_INSIDE_COLOR);
                                 stack_knob.set_line_color(A_KNOB_OUTSIDE_COLOR);
@@ -372,6 +382,7 @@ impl Plugin for Gain {
                                 alg_knob.preset_style(ui_knob::KnobStyle::SmallTogether);
                                 alg_knob.set_fill_color(A_KNOB_OUTSIDE_COLOR2);
                                 alg_knob.set_line_color(A_KNOB_OUTSIDE_COLOR);
+                                alg_knob.set_text_size(14.0);
                                 ui.add(alg_knob);
 
                                 let mut decay_knob = ui_knob::ArcKnob::for_param(&params.reverb_decay, setter, knob_size);
@@ -379,7 +390,9 @@ impl Plugin for Gain {
                                 decay_knob.set_fill_color(A_KNOB_INSIDE_COLOR);
                                 decay_knob.set_line_color(A_KNOB_OUTSIDE_COLOR);
                                 ui.add(decay_knob);
+                            });
 
+                            ui.horizontal(|ui| {
                                 let mut step_knob = ui_knob::ArcKnob::for_param(&params.reverb_steps, setter, knob_size);
                                 step_knob.preset_style(ui_knob::KnobStyle::LargeMedium);
                                 step_knob.set_fill_color(A_KNOB_INSIDE_COLOR);
@@ -402,31 +415,39 @@ impl Plugin for Gain {
                                 width_random.preset_style(ui_knob::KnobStyle::LargeMedium);
                                 width_random.set_fill_color(A_KNOB_INSIDE_COLOR);
                                 width_random.set_line_color(A_KNOB_OUTSIDE_COLOR);
-                                ui.add(width_random);                                
-
-                                let mut dry_wet_knob = ui_knob::ArcKnob::for_param(&params.dry_wet, setter, knob_size);
-                                dry_wet_knob.preset_style(ui_knob::KnobStyle::SmallTogether);
-                                dry_wet_knob.set_fill_color(A_KNOB_OUTSIDE_COLOR2);
-                                dry_wet_knob.set_line_color(A_KNOB_OUTSIDE_COLOR);
-                                ui.add(dry_wet_knob);
-
-                                let mut output_knob = ui_knob::ArcKnob::for_param(&params.output_gain, setter, knob_size);
-                                output_knob.preset_style(ui_knob::KnobStyle::SmallTogether);
-                                output_knob.set_fill_color(A_KNOB_OUTSIDE_COLOR2);
-                                output_knob.set_line_color(A_KNOB_OUTSIDE_COLOR);
-                                ui.add(output_knob);
+                                ui.add(width_random);
                             });
+
+                            ui.separator();
 
                             let spacer_size = 8.0;
                             ui.horizontal(|ui| {
                                 ui.add_space(spacer_size);
-                                ui.add(ParamSlider::for_param(&params.reverb_low_cut, setter).with_width(200.0));
-                                ui.add_space(spacer_size);
-                                ui.add(ParamSlider::for_param(&params.reverb_high_cut, setter).with_width(200.0));
-                                ui.add_space(spacer_size);
-                                ui.add(ParamSlider::for_param(&params.reverb_lock, setter).with_width(16.0));
-                                ui.add_space(spacer_size);
-                                ui.add(ParamSlider::for_param(&params.reverb_sidechain, setter).with_width(40.0));
+                                ui.vertical(|ui| {
+                                    ui.add(OtherParamSlider::for_param(&params.reverb_high_cut, setter).with_width(300.0).set_reversed(true));
+                                    ui.add(ParamSlider::for_param(&params.reverb_low_cut, setter).with_width(300.0));
+
+                                    ui.horizontal(|ui| {
+                                        ui.add(ParamSlider::for_param(&params.reverb_lock, setter).with_width(16.0));
+                                        ui.add_space(8.0);
+                                        ui.add(ParamSlider::for_param(&params.reverb_sidechain, setter).with_width(100.0));
+                                    });
+
+                                    ui.horizontal(|ui| {
+                                        ui.add_space(knob_size*2.0 + spacer_size*2.0);
+                                        let mut dry_wet_knob = ui_knob::ArcKnob::for_param(&params.dry_wet, setter, knob_size);
+                                        dry_wet_knob.preset_style(ui_knob::KnobStyle::LargeMedium);
+                                        dry_wet_knob.set_fill_color(A_KNOB_OUTSIDE_COLOR2);
+                                        dry_wet_knob.set_line_color(A_KNOB_OUTSIDE_COLOR);
+                                        ui.add(dry_wet_knob);
+
+                                        let mut output_knob = ui_knob::ArcKnob::for_param(&params.output_gain, setter, knob_size);
+                                        output_knob.preset_style(ui_knob::KnobStyle::LargeMedium);
+                                        output_knob.set_fill_color(A_KNOB_OUTSIDE_COLOR2);
+                                        output_knob.set_line_color(A_KNOB_OUTSIDE_COLOR);
+                                        ui.add(output_knob);
+                                    });
+                                });
                             });
                         });
                     });
@@ -539,6 +560,13 @@ impl Plugin for Gain {
                 self.prev_width_offset = width_offset;
             }
 
+            if reverb_sidechain != self.prev_sc_threshold {
+                let temp_sr = _context.transport().sample_rate;
+                self.ducking_l.update_threshold(reverb_sidechain, temp_sr);
+                self.ducking_r.update_threshold(reverb_sidechain, temp_sr);
+                self.prev_sc_threshold = reverb_sidechain;
+            }
+
             if update_bool == true
             {
                 let mut counter: i32 = 1;
@@ -593,13 +621,19 @@ impl Plugin for Gain {
                 let mid = (processed_sample_l + processed_sample_r)*0.5;
                 // Process an unwritable buffer for 'freeze' functionality.
                 if reverb_lock == 1 {
-                    processed_sample_l += sidechain(in_l,left.locked_buffer_process(widthInv * mid + (calc_width_offset) * processed_sample_l),reverb_sidechain);
-                    processed_sample_r += sidechain(in_r,right.locked_buffer_process(widthInv * mid + (-calc_width_offset) * processed_sample_r),reverb_sidechain);
+                    let tempSample_l: f32 = left.locked_buffer_process(widthInv * mid + (calc_width_offset) * processed_sample_l);
+                    let tempSample_r: f32 = right.locked_buffer_process(widthInv * mid + (-calc_width_offset) * processed_sample_r);
+
+                    processed_sample_l += self.ducking_l.process(tempSample_l, in_l);
+                    processed_sample_r += self.ducking_r.process(tempSample_r, in_r);
                 }
                 else {
                     // Process buffer and write to buffer
-                    processed_sample_l += sidechain(in_l, left.process(widthInv * mid + (calc_width_offset) * processed_sample_l), reverb_sidechain);
-                    processed_sample_r += sidechain(in_r, right.process(widthInv * mid + (-calc_width_offset) * processed_sample_r), reverb_sidechain);
+                    let tempSample_l: f32 = left.process(widthInv * mid + (calc_width_offset) * processed_sample_l);
+                    let tempSample_r: f32 = right.process(widthInv * mid + (-calc_width_offset) * processed_sample_r);
+
+                    processed_sample_l += self.ducking_l.process(tempSample_l, in_l);
+                    processed_sample_r += self.ducking_r.process(tempSample_r, in_r);
                 }
             }
 
@@ -712,12 +746,4 @@ pub fn format_hp_filter(digits: usize) -> Arc<dyn Fn(f32) -> String + Send + Syn
     Arc::new(move |value| {
         format!("{:.digits$}", (value * 1570.0) + 30.0)
     })
-}
-
-fn sidechain(sig_ref: f32, sig_sidechained: f32, tension: f32) -> f32 {
-    if tension > 0.0 {
-        (sig_sidechained.abs() - sig_ref.abs()*tension)*sig_sidechained.signum()
-    } else {
-        sig_sidechained
-    }
 }

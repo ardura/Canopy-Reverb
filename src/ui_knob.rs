@@ -74,6 +74,7 @@ pub struct ArcKnob<'a, P: Param> {
     hover_text: bool,
     hover_text_content: String,
     label_text: String,
+    text_size: f32,
     outline: bool,
 }
 
@@ -101,6 +102,7 @@ impl<'a, P: Param> ArcKnob<'a, P> {
             center_to_line_space: 0.0,
             hover_text: false,
             hover_text_content: String::new(),
+            text_size: 16.0,
             label_text: String::new(),
             outline: false,
         }
@@ -149,6 +151,11 @@ impl<'a, P: Param> ArcKnob<'a, P> {
     // Specify distance between center and arc
     pub fn set_center_to_line_space(&mut self, new_width: f32) {
         self.center_to_line_space = new_width;
+    }
+
+    // Set text size for label
+    pub fn set_text_size(&mut self, text_size: f32) {
+        self.text_size = text_size;
     }
 
     pub fn preset_style(&mut self, style_id: KnobStyle)
@@ -247,11 +254,11 @@ impl<'a, P: Param> Widget for ArcKnob<'a, P> {
             // Label text from response rect bound
             let label_pos = Pos2::new(response.rect.center_bottom().x,response.rect.center_bottom().y - padding);
             if self.label_text.is_empty() {
-                painter.text(label_pos, Align2::CENTER_CENTER, self.slider_region.get_string(), FontId::proportional(12.0), self.line_color);
+                painter.text(label_pos, Align2::CENTER_CENTER, self.slider_region.get_string(), FontId::proportional(self.text_size), self.line_color);
                 //ui.label(self.slider_region.get_string());
             }
             else {
-                painter.text(label_pos, Align2::CENTER_CENTER, self.label_text, FontId::proportional(12.0), self.line_color);
+                painter.text(label_pos, Align2::CENTER_CENTER, self.label_text, FontId::proportional(self.text_size), self.line_color);
                 //ui.label(self.label_text);
             }
             

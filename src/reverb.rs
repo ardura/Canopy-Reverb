@@ -122,14 +122,12 @@ impl Reverb {
                 // Not really sure how to describe but it sounds cool
                 ReverbType::ChaosSteps => {
                     let mut x = input_number;
-                    let mut y = number_of_integers;
-                    for _ in 1..number_of_integers {
-                        let z = (x + y) / 2;
-                        let step = input_number*2 - 1;
-                        x = z + step;
-                        y = z - step;
-                        output_vector.push_back(x);
-                    }
+                    let y = number_of_integers;
+                    let z = (x + y) / 2;
+                    let step = input_number*2 - 1;
+                    x = z + step;
+                    //y = z - step;
+                    output_vector.push_back(x);
                 },
                 // Golden Ratio
                 ReverbType::GoldenRatio => {
